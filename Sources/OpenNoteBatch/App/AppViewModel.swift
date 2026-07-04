@@ -10,6 +10,10 @@ final class AppViewModel: ObservableObject {
     }
     @Published var selectedTab: WorkspaceTab = .home
     @Published var selectedToolID: ToolID = .attachmentList
+    @Published var selectedNotebookID: String?
+    @Published var selectedTreeItemID: String?
+    @Published var toolSearchText = ""
+    @Published var notebookSearchText = ""
     @Published var notebooks: [NotebookNode] = []
     @Published var selectedPageIDs: Set<String> = []
     @Published var selectedSectionID: String?
@@ -27,9 +31,12 @@ final class AppViewModel: ObservableObject {
     @Published var isBusy = false
     @Published var statusMessage = "Sign in, load notebooks, then choose a tool."
     @Published var showSettings = false
+    @Published private(set) var loadingNodeIDs: Set<String> = []
+    @Published private(set) var loadedNodeIDs: Set<String> = []
 
     let auth = AuthService()
     private var cancellables = Set<AnyCancellable>()
+    private var pendingSectionSelections: [String: Bool] = [:]
 
     var selectedTool: ToolDefinition {
         ToolDefinition.all.first { $0.id == selectedToolID } ?? ToolDefinition.all[0]
@@ -37,6 +44,15 @@ final class AppViewModel: ObservableObject {
 
     var visibleTools: [ToolDefinition] {
         ToolDefinition.all.filter { $0.tab == selectedTab }
+    }
+
+    var filteredVisibleTools: [ToolDefinition] {
+        let query = toolSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return visibleTools }
+        return visibleTools.filter { tool in
+            tool.title.localizedCaseInsensitiveContains(query)
+                || tool.subtitle.localizedCaseInsensitiveContains(query)
+        }
     }
 
     var selectedPages: [PageNode] {
@@ -62,6 +78,23 @@ final class AppViewModel: ObservableObject {
         results = []
     }
 
+    func select(toolID: ToolID) {
+        selectedToolID = toolID
+        selectedTab = selectedTool.tab
+        results = []
+    }
+
+    func selectTreeItem(_ id: String?) {
+        selectedTreeItemID = id
+        guard let id else { return }
+
+        if id.hasPrefix("notebook:") {
+            selectedNotebookID = String(id.dropFirst("notebook:".count))
+        } else if id.hasPrefix("section:") {
+            selectedSectionID = String(id.dropFirst("section:".count))
+        }
+    }
+
     func signIn(kind: AccountKind) {
         Task {
             do {
@@ -80,29 +113,139 @@ final class AppViewModel: ObservableObject {
         Task {
             await self.runBusy(title: "Loading notebooks") {
                 let repository = try await self.makeRepository()
-                var loadedNotebooks = try await repository.notebooks()
-                for notebookIndex in loadedNotebooks.indices {
-                    var sections = try await repository.sections(notebookID: loadedNotebooks[notebookIndex].id)
-                    sections = try await self.loadPages(
-                        for: sections,
-                        repository: repository,
-                        notebookName: loadedNotebooks[notebookIndex].displayName
-                    )
-                    loadedNotebooks[notebookIndex].sections = sections
-                    loadedNotebooks[notebookIndex].sectionGroups = try await self.loadSectionGroups(
-                        notebookID: loadedNotebooks[notebookIndex].id,
-                        notebookName: loadedNotebooks[notebookIndex].displayName,
-                        repository: repository
-                    )
-                }
+                let loadedNotebooks = try await repository.notebooks()
+                self.selectedPageIDs = []
+                self.selectedSectionID = nil
+                self.pendingSectionSelections = [:]
+                self.loadingNodeIDs = []
+                self.loadedNodeIDs = []
                 self.notebooks = loadedNotebooks
+                self.selectedNotebookID = loadedNotebooks.first?.id
+                self.selectedTreeItemID = loadedNotebooks.first.map { "notebook:\($0.id)" }
                 self.statusMessage = "Loaded \(loadedNotebooks.count) notebook(s)."
-                return [.init(name: "Notebook tree", path: "", status: .success, message: "Loaded notebooks, sections, and pages.")]
+                return [.init(name: "Notebook tree", path: "", status: .success, message: "Loaded notebooks. Expand a notebook to load its sections.")]
             }
         }
     }
 
+    func loadNotebookContentsIfNeeded(_ notebook: NotebookNode) {
+        let key = nodeKey("notebook", notebook.id)
+        guard !loadedNodeIDs.contains(key), !loadingNodeIDs.contains(key) else { return }
+        loadingNodeIDs.insert(key)
+        statusMessage = "Loading sections for \(notebook.displayName)..."
+        Task {
+            do {
+                let repository = try await self.makeRepository()
+                async let sections = repository.sections(notebookID: notebook.id)
+                async let groups = repository.sectionGroups(notebookID: notebook.id)
+                let loadedSections = try await sections
+                let loadedGroups = try await groups
+                self.updateNotebook(id: notebook.id) {
+                    $0.sections = loadedSections
+                    $0.sectionGroups = loadedGroups
+                }
+                self.loadedNodeIDs.insert(key)
+                self.statusMessage = "Loaded sections for \(notebook.displayName)."
+            } catch {
+                self.results = [.init(name: notebook.displayName, path: "", status: .failed, message: error.localizedDescription)]
+                self.statusMessage = error.localizedDescription
+            }
+            self.loadingNodeIDs.remove(key)
+        }
+    }
+
+    func loadSectionGroupContentsIfNeeded(_ group: SectionGroupNode) {
+        let key = nodeKey("group", group.id)
+        guard !loadedNodeIDs.contains(key), !loadingNodeIDs.contains(key) else { return }
+        loadingNodeIDs.insert(key)
+        statusMessage = "Loading sections for \(group.displayName)..."
+        Task {
+            do {
+                let repository = try await self.makeRepository()
+                let path = [group.parentPath, group.displayName].filter { !$0.isEmpty }.joined(separator: " / ")
+                async let sections = repository.sections(
+                    sectionGroupID: group.id,
+                    notebookID: group.notebookID,
+                    groupPath: path
+                )
+                async let childGroups = repository.childSectionGroups(
+                    sectionGroupID: group.id,
+                    notebookID: group.notebookID,
+                    parentPath: path
+                )
+                let loadedSections = try await sections
+                let loadedChildGroups = try await childGroups
+                self.updateSectionGroup(id: group.id) {
+                    $0.sections = loadedSections
+                    $0.sectionGroups = loadedChildGroups
+                }
+                self.loadedNodeIDs.insert(key)
+                self.statusMessage = "Loaded sections for \(group.displayName)."
+            } catch {
+                self.results = [.init(name: group.displayName, path: "", status: .failed, message: error.localizedDescription)]
+                self.statusMessage = error.localizedDescription
+            }
+            self.loadingNodeIDs.remove(key)
+        }
+    }
+
+    func loadSectionPagesIfNeeded(_ section: SectionNode) {
+        let key = nodeKey("section", section.id)
+        guard !loadedNodeIDs.contains(key), !loadingNodeIDs.contains(key) else { return }
+        loadingNodeIDs.insert(key)
+        statusMessage = "Loading pages for \(section.displayName)..."
+        Task {
+            do {
+                let repository = try await self.makeRepository()
+                var pages = try await repository.pages(sectionID: section.id)
+                let sectionName = [section.groupPath, section.displayName]
+                    .filter { !$0.isEmpty }
+                    .joined(separator: " / ")
+                pages = pages.map {
+                    var page = $0
+                    page.notebookName = self.notebookName(for: section)
+                    page.sectionName = sectionName
+                    return page
+                }
+                self.updateSection(id: section.id) {
+                    $0.pages = pages
+                }
+                if let pendingSelection = self.pendingSectionSelections.removeValue(forKey: section.id) {
+                    let pageIDs = pages.map(\.id)
+                    if pendingSelection {
+                        self.selectedPageIDs.formUnion(pageIDs)
+                    } else {
+                        self.selectedPageIDs.subtract(pageIDs)
+                    }
+                }
+                self.loadedNodeIDs.insert(key)
+                self.statusMessage = "Loaded \(pages.count) page(s) for \(section.displayName)."
+            } catch {
+                self.results = [.init(name: section.displayName, path: "", status: .failed, message: error.localizedDescription)]
+                self.statusMessage = error.localizedDescription
+            }
+            self.loadingNodeIDs.remove(key)
+        }
+    }
+
+    func isLoadingNotebook(_ notebook: NotebookNode) -> Bool {
+        loadingNodeIDs.contains(nodeKey("notebook", notebook.id))
+    }
+
+    func isLoadingSectionGroup(_ group: SectionGroupNode) -> Bool {
+        loadingNodeIDs.contains(nodeKey("group", group.id))
+    }
+
+    func isLoadingSection(_ section: SectionNode) -> Bool {
+        loadingNodeIDs.contains(nodeKey("section", section.id))
+    }
+
+    func hasLoadedSection(_ section: SectionNode) -> Bool {
+        loadedNodeIDs.contains(nodeKey("section", section.id))
+    }
+
     func togglePage(_ page: PageNode, isSelected: Bool) {
+        selectedTreeItemID = "page:\(page.id)"
         if isSelected {
             selectedPageIDs.insert(page.id)
         } else {
@@ -112,9 +255,16 @@ final class AppViewModel: ObservableObject {
 
     func toggleSection(_ section: SectionNode, isSelected: Bool) {
         selectedSectionID = section.id
+        selectedTreeItemID = "section:\(section.id)"
+        if section.pages.isEmpty && !hasLoadedSection(section) {
+            pendingSectionSelections[section.id] = isSelected
+            loadSectionPagesIfNeeded(section)
+            return
+        }
         for page in section.pages {
             togglePage(page, isSelected: isSelected)
         }
+        selectedTreeItemID = "section:\(section.id)"
     }
 
     func chooseOutputFolder() {
@@ -342,75 +492,68 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func loadSectionGroups(
-        notebookID: String,
-        notebookName: String,
-        repository: OneNoteRepository
-    ) async throws -> [SectionGroupNode] {
-        var groups = try await repository.sectionGroups(notebookID: notebookID)
-        for index in groups.indices {
-            groups[index] = try await loadSectionGroup(
-                groups[index],
-                notebookName: notebookName,
-                repository: repository
-            )
-        }
-        return groups
+    private func nodeKey(_ type: String, _ id: String) -> String {
+        "\(type):\(id)"
     }
 
-    private func loadSectionGroup(
-        _ group: SectionGroupNode,
-        notebookName: String,
-        repository: OneNoteRepository
-    ) async throws -> SectionGroupNode {
-        var loaded = group
-        let path = [group.parentPath, group.displayName].filter { !$0.isEmpty }.joined(separator: " / ")
-        let sections = try await repository.sections(
-            sectionGroupID: group.id,
-            notebookID: group.notebookID,
-            groupPath: path
-        )
-        loaded.sections = try await loadPages(
-            for: sections,
-            repository: repository,
-            notebookName: notebookName
-        )
-
-        var childGroups = try await repository.childSectionGroups(
-            sectionGroupID: group.id,
-            notebookID: group.notebookID,
-            parentPath: path
-        )
-        for index in childGroups.indices {
-            childGroups[index] = try await loadSectionGroup(
-                childGroups[index],
-                notebookName: notebookName,
-                repository: repository
-            )
-        }
-        loaded.sectionGroups = childGroups
-        return loaded
+    private func notebookName(for section: SectionNode) -> String? {
+        guard let notebookID = section.notebookID else { return nil }
+        return notebooks.first { $0.id == notebookID }?.displayName
     }
 
-    private func loadPages(
-        for sections: [SectionNode],
-        repository: OneNoteRepository,
-        notebookName: String
-    ) async throws -> [SectionNode] {
-        var loadedSections = sections
-        for sectionIndex in loadedSections.indices {
-            var pages = try await repository.pages(sectionID: loadedSections[sectionIndex].id)
-            pages = pages.map {
-                var page = $0
-                page.notebookName = notebookName
-                page.sectionName = [loadedSections[sectionIndex].groupPath, loadedSections[sectionIndex].displayName]
-                    .filter { !$0.isEmpty }
-                    .joined(separator: " / ")
-                return page
+    private func updateNotebook(id: String, transform: (inout NotebookNode) -> Void) {
+        guard let index = notebooks.firstIndex(where: { $0.id == id }) else { return }
+        transform(&notebooks[index])
+    }
+
+    private func updateSection(id: String, transform: (inout SectionNode) -> Void) {
+        for notebookIndex in notebooks.indices {
+            if let sectionIndex = notebooks[notebookIndex].sections.firstIndex(where: { $0.id == id }) {
+                transform(&notebooks[notebookIndex].sections[sectionIndex])
+                return
             }
-            loadedSections[sectionIndex].pages = pages
+            if updateSection(id: id, in: &notebooks[notebookIndex].sectionGroups, transform: transform) {
+                return
+            }
         }
-        return loadedSections
+    }
+
+    private func updateSection(id: String, in groups: inout [SectionGroupNode], transform: (inout SectionNode) -> Void) -> Bool {
+        for groupIndex in groups.indices {
+            if let sectionIndex = groups[groupIndex].sections.firstIndex(where: { $0.id == id }) {
+                transform(&groups[groupIndex].sections[sectionIndex])
+                return true
+            }
+            if updateSection(id: id, in: &groups[groupIndex].sectionGroups, transform: transform) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func updateSectionGroup(id: String, transform: (inout SectionGroupNode) -> Void) {
+        for notebookIndex in notebooks.indices {
+            if updateSectionGroup(id: id, in: &notebooks[notebookIndex].sectionGroups, transform: transform) {
+                return
+            }
+        }
+    }
+
+    private func updateSectionGroup(
+        id: String,
+        in groups: inout [SectionGroupNode],
+        transform: (inout SectionGroupNode) -> Void
+    ) -> Bool {
+        for groupIndex in groups.indices {
+            if groups[groupIndex].id == id {
+                transform(&groups[groupIndex])
+                return true
+            }
+            if updateSectionGroup(id: id, in: &groups[groupIndex].sectionGroups, transform: transform) {
+                return true
+            }
+        }
+        return false
     }
 
     private func loadSettings() {

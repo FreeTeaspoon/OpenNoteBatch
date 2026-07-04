@@ -4,176 +4,185 @@ struct ToolDetailView: View {
     @EnvironmentObject private var model: AppViewModel
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                header
-                options
-                progress
-                ResultsTableView(results: model.results)
-                    .frame(minHeight: 360)
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    header
+                    options
+                    taskStatus
+                }
+                .padding(24)
+                .frame(maxWidth: 900, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(24)
+
+            Divider()
+
+            ResultsTableView(results: model.results)
+                .frame(minHeight: 280)
         }
+        .navigationTitle(model.selectedTool.title)
     }
 
     private var header: some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 6) {
-                Label(model.selectedTool.title, systemImage: model.selectedTool.symbol)
-                    .font(.largeTitle.weight(.bold))
-                    .labelStyle(.titleAndIcon)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.75)
-                Text(model.selectedTool.subtitle)
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                if !model.selectedTool.isGraphSupported {
-                    Label("This tool is visible for feature parity, but public Microsoft Graph support is limited.", systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
-                }
+        VStack(alignment: .leading, spacing: 8) {
+            Label(model.selectedTool.title, systemImage: model.selectedTool.symbol)
+                .font(.title.weight(.semibold))
+                .labelStyle(.titleAndIcon)
+                .lineLimit(2)
+
+            Text(model.selectedTool.subtitle)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
+
+            if !model.selectedTool.isGraphSupported {
+                Label("Public Microsoft Graph support is limited for this tool.", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
             }
-            Spacer()
-            Button {
-                model.runSelectedTool()
-            } label: {
-                Image(systemName: model.isBusy ? "stop.circle.fill" : "play.fill")
-                    .font(.system(size: 44, weight: .bold))
-                    .frame(width: 72, height: 72)
-            }
-            .buttonStyle(.borderless)
-            .disabled(model.isBusy)
-            .help("Run selected tool")
         }
     }
 
     @ViewBuilder
     private var options: some View {
-        switch model.selectedToolID {
-        case .attachmentList:
-            VStack(alignment: .leading, spacing: 10) {
-                Toggle("Include embedded images", isOn: $model.includeImages)
-                outputChooser(label: "Save Folder")
-            }
-        case .tagList:
-            Text("Scans selected pages for OneNote `data-tag` markers.")
-                .foregroundStyle(.secondary)
-        case .replacePageTitle:
-            VStack(alignment: .leading, spacing: 10) {
-                TextField("Search", text: $model.searchText)
-                TextField("Replace", text: $model.replaceText)
-                Toggle("Match case", isOn: $model.matchCase)
-            }
-        case .search:
-            VStack(alignment: .leading, spacing: 10) {
-                TextField("Search content", text: $model.searchText)
-                HStack {
-                    Toggle("Match case", isOn: $model.matchCase)
-                    Toggle("Search in page title only", isOn: $model.titleOnlySearch)
+        if model.selectedToolID == .account {
+            AccountPanelView()
+        } else {
+            Form {
+                Section("Options") {
+                    optionRows
                 }
             }
+            .formStyle(.grouped)
+        }
+    }
+
+    @ViewBuilder
+    private var optionRows: some View {
+        switch model.selectedToolID {
+        case .attachmentList:
+            Toggle("Include embedded images", isOn: $model.includeImages)
+            outputChooser(label: "Save folder")
+        case .tagList:
+            Text("Scans selected pages for OneNote data-tag markers.")
+                .foregroundStyle(.secondary)
+        case .replacePageTitle:
+            TextField("Find", text: $model.searchText)
+            TextField("Replace with", text: $model.replaceText)
+            Toggle("Match case", isOn: $model.matchCase)
+        case .search:
+            TextField("Search content", text: $model.searchText)
+            Toggle("Match case", isOn: $model.matchCase)
+            Toggle("Search page titles only", isOn: $model.titleOnlySearch)
         case .copySections:
             targetSectionField
         case .exportText, .exportHTML, .backup:
-            outputChooser(label: "Store Folder")
+            outputChooser(label: "Store folder")
         case .importText:
-            importFileChooser(label: "Text Files", extensions: ["txt"])
+            importFileChooser(label: "Text files", extensions: ["txt"])
             targetSectionField
         case .importHTML, .importMacNotes, .importGoogleKeep:
-            importFileChooser(label: "HTML Files", extensions: ["html", "htm"])
+            importFileChooser(label: "HTML files", extensions: ["html", "htm"])
             targetSectionField
         case .importImages:
             importFileChooser(label: "Images", extensions: ["png", "jpg", "jpeg", "gif", "heic", "tiff"])
             targetSectionField
         case .importTree:
-            importFolderChooser(label: "Source Folder")
+            importFolderChooser(label: "Source folder")
             targetSectionField
         case .importEvernote:
-            importFileChooser(label: "ENEX File", extensions: ["enex"])
+            importFileChooser(label: "ENEX file", extensions: ["enex"])
             targetSectionField
         case .restore:
-            importFileChooser(label: "Backup Manifest", extensions: ["json"])
+            importFileChooser(label: "Backup manifest", extensions: ["json"])
             targetSectionField
-        case .account:
-            AccountPanelView()
-        default:
-            Text("Run this tool to see available Graph support.")
+        case .findLost, .sectionSize:
+            Label("Run this tool to see the current Graph API limitation details.", systemImage: "info.circle")
                 .foregroundStyle(.secondary)
+        case .account:
+            EmptyView()
         }
     }
 
     private var targetSectionField: some View {
-        TextField("Target section ID (or select a section in the sidebar)", text: $model.targetSectionID)
-            .textFieldStyle(.roundedBorder)
+        TextField(
+            "Target section",
+            text: $model.targetSectionID,
+            prompt: Text("Select a section in the sidebar or paste a section ID")
+        )
     }
 
     private func outputChooser(label: String) -> some View {
-        HStack {
-            TextField(label, text: Binding(
-                get: { model.outputDirectory?.path ?? "" },
-                set: { model.outputDirectory = URL(fileURLWithPath: $0) }
-            ))
-            .textFieldStyle(.roundedBorder)
-            Button {
-                model.chooseOutputFolder()
-            } label: {
-                Image(systemName: "folder")
+        LabeledContent(label) {
+            HStack {
+                TextField(label, text: Binding(
+                    get: { model.outputDirectory?.path ?? "" },
+                    set: { model.outputDirectory = $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
+                ))
+                .labelsHidden()
+
+                Button {
+                    model.chooseOutputFolder()
+                } label: {
+                    Label("Choose folder", systemImage: "folder")
+                }
+                .labelStyle(.iconOnly)
+                .help("Choose folder")
             }
-            .help("Choose folder")
         }
     }
 
     private func importFileChooser(label: String, extensions: [String]) -> some View {
-        HStack {
-            Text(model.importFiles.isEmpty ? label : "\(model.importFiles.count) file(s) selected")
-                .foregroundStyle(model.importFiles.isEmpty ? .secondary : .primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(7)
-                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
-            Button {
-                model.chooseImportFiles(extensions: extensions)
-            } label: {
-                Image(systemName: "doc.badge.plus")
+        LabeledContent(label) {
+            HStack {
+                Text(model.importFiles.isEmpty ? "No files selected" : "\(model.importFiles.count) file(s) selected")
+                    .foregroundStyle(model.importFiles.isEmpty ? .secondary : .primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .lineLimit(1)
+
+                Button {
+                    model.chooseImportFiles(extensions: extensions)
+                } label: {
+                    Label("Choose files", systemImage: "doc.badge.plus")
+                }
+                .labelStyle(.iconOnly)
+                .help("Choose files")
             }
         }
     }
 
     private func importFolderChooser(label: String) -> some View {
-        HStack {
-            Text(model.importRoot?.path ?? label)
-                .foregroundStyle(model.importRoot == nil ? .secondary : .primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(7)
-                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
-            Button {
-                model.chooseImportRoot()
-            } label: {
-                Image(systemName: "folder")
-            }
-        }
-    }
-
-    private var progress: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        LabeledContent(label) {
             HStack {
-                Text(model.statusMessage)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text(model.task.status.rawValue.capitalized)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(color(for: model.task.status))
+                Text(model.importRoot?.path ?? "No folder selected")
+                    .foregroundStyle(model.importRoot == nil ? .secondary : .primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .lineLimit(1)
+
+                Button {
+                    model.chooseImportRoot()
+                } label: {
+                    Label("Choose folder", systemImage: "folder")
+                }
+                .labelStyle(.iconOnly)
+                .help("Choose folder")
             }
-            ProgressView(value: model.task.progress)
         }
     }
 
-    private func color(for status: BatchStatus) -> Color {
-        switch status {
-        case .success: .green
-        case .failed: .red
-        case .warning, .unsupported: .orange
-        case .running: .blue
-        default: .secondary
+    private var taskStatus: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            LabeledContent("Status") {
+                HStack {
+                    StatusLabel(status: model.task.status)
+                    Text(model.statusMessage)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+
+            ProgressView(value: model.task.progress)
+                .opacity(model.task.status == .ready ? 0.55 : 1)
         }
     }
 }
@@ -183,8 +192,12 @@ struct ResultsTableView: View {
 
     var body: some View {
         if results.isEmpty {
-            ContentUnavailableView("No Results", systemImage: "tablecells", description: Text("Run a tool to populate this table."))
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            ContentUnavailableView(
+                "No Results",
+                systemImage: "tablecells",
+                description: Text("Run a tool to populate this table.")
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             Table(results) {
                 TableColumn("Name") { result in
@@ -197,25 +210,50 @@ struct ResultsTableView: View {
                         .lineLimit(1)
                 }
                 TableColumn("Status") { result in
-                    Text(result.status.rawValue.capitalized)
-                        .foregroundStyle(statusColor(result.status))
+                    StatusLabel(status: result.status)
                 }
                 TableColumn("Message") { result in
                     Text(result.message)
                         .lineLimit(2)
                 }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+    }
+}
+
+private struct StatusLabel: View {
+    let status: BatchStatus
+
+    var body: some View {
+        Label(status.title, systemImage: status.symbol)
+            .foregroundStyle(status.color)
+            .lineLimit(1)
+    }
+}
+
+private extension BatchStatus {
+    var title: String {
+        rawValue.capitalized
+    }
+
+    var symbol: String {
+        switch self {
+        case .ready: "circle"
+        case .running: "arrow.triangle.2.circlepath"
+        case .success: "checkmark.circle"
+        case .warning: "exclamationmark.triangle"
+        case .failed: "xmark.circle"
+        case .unsupported: "slash.circle"
         }
     }
 
-    private func statusColor(_ status: BatchStatus) -> Color {
-        switch status {
+    var color: Color {
+        switch self {
         case .success: .green
         case .failed: .red
         case .warning, .unsupported: .orange
         case .running: .blue
-        default: .secondary
+        case .ready: .secondary
         }
     }
 }

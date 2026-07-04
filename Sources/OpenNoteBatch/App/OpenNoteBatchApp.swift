@@ -15,13 +15,10 @@ struct OpenNoteBatchApp: App {
         .windowStyle(.titleBar)
         .defaultSize(width: 1240, height: 760)
         .windowResizability(.contentMinSize)
-        .commands {
-            CommandGroup(after: .appSettings) {
-                Button("OpenNote Batch Settings...") {
-                    model.showSettings = true
-                }
-                .keyboardShortcut(",", modifiers: .command)
-            }
+
+        Settings {
+            SettingsView()
+                .environmentObject(model)
         }
     }
 }
