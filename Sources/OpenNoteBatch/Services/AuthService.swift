@@ -11,6 +11,7 @@ final class AuthService: ObservableObject {
     private var loginSession: LoginSession?
     private let tokenAccountKey = "microsoft-token"
     private let graphAccountKey = "microsoft-account"
+    private let requestTimeout: TimeInterval = 30
 
     struct LoginSession {
         var accountKind: AccountKind
@@ -139,6 +140,7 @@ final class AuthService: ObservableObject {
 
     private func tokenRequest(url: URL, fields: [String: String]) async throws -> TokenSet {
         var request = URLRequest(url: url)
+        request.timeoutInterval = requestTimeout
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.httpBody = fields
@@ -160,6 +162,7 @@ final class AuthService: ObservableObject {
 
     private func fetchProfile(token: TokenSet, accountKind: AccountKind) async throws -> GraphAccount {
         var request = URLRequest(url: URL(string: "\(accountKind.graphRoot)/me?$select=id,displayName,userPrincipalName,mail")!)
+        request.timeoutInterval = requestTimeout
         request.setValue("Bearer \(token.accessToken)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await URLSession.shared.data(for: request)
         try validateHTTP(data: data, response: response)
@@ -220,4 +223,3 @@ struct GraphErrorResponse: Decodable {
         case errorDescription = "error_description"
     }
 }
-

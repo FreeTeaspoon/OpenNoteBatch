@@ -18,6 +18,8 @@ project does not reuse any vendor client ID, private assets, or app code.
 - Page search across title or content.
 - Tag list scan from OneNote page HTML.
 - Export selected pages to text, HTML, or backup folders.
+- Export embedded images in their visual top-to-bottom order, optionally compositing
+  overlapping ink drawings and creating a multi-page PDF for each OneNote page.
 - Import text, HTML, images, and simple folder trees into OneNote sections.
 - Account status and re-login screen.
 - Keychain storage for Microsoft OAuth tokens.

@@ -41,6 +41,7 @@ struct SidebarView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
+                .padding(.bottom, 6)
                 .textCase(nil)
             }
         }
@@ -117,27 +118,37 @@ private struct NotebookTreeRow: View {
 
     var body: some View {
         DisclosureGroup(isExpanded: $isExpanded) {
-            ForEach(notebook.sections) { section in
-                SectionTreeRow(section: section)
-            }
-            ForEach(notebook.sectionGroups) { group in
-                SectionGroupTreeRow(group: group)
+            ForEach(TreeChild.sorted(sections: notebook.sections, groups: notebook.sectionGroups)) { child in
+                switch child {
+                case .section(let section):
+                    SectionTreeRow(section: section)
+                case .group(let group):
+                    SectionGroupTreeRow(group: group)
+                }
             }
             if model.isLoadingNotebook(notebook) {
                 LoadingTreeRow(title: "Loading sections")
             }
         } label: {
             HStack {
-                Label(notebook.displayName, systemImage: "book.closed")
-                    .lineLimit(1)
+                TreeItemLabel(title: notebook.displayName, systemImage: "book.closed")
                 Spacer()
                 if model.isLoadingNotebook(notebook) {
                     ProgressView()
                         .controlSize(.small)
                 }
             }
+            .padding(.vertical, 2)
         }
         .tag("notebook:\(notebook.id)")
+        .contextMenu {
+            Button {
+                model.renameNotebook(notebook)
+            } label: {
+                Label("Rename Notebook", systemImage: "pencil")
+            }
+            .disabled(model.isBusy || model.auth.account == nil)
+        }
         .onChange(of: isExpanded) { _, expanded in
             if expanded {
                 model.selectTreeItem("notebook:\(notebook.id)")
@@ -153,35 +164,94 @@ private struct SectionGroupTreeRow: View {
 
     let group: SectionGroupNode
 
+    private var isSelected: Binding<Bool> {
+        Binding(
+            get: { model.isSectionGroupSelected(group) },
+            set: { model.toggleSectionGroup(group, isSelected: $0) }
+        )
+    }
+
     var body: some View {
         DisclosureGroup(isExpanded: $isExpanded) {
-            ForEach(group.sections) { section in
-                SectionTreeRow(section: section)
-            }
-            ForEach(group.sectionGroups) { childGroup in
-                SectionGroupTreeRow(group: childGroup)
+            ForEach(TreeChild.sorted(sections: group.sections, groups: group.sectionGroups)) { child in
+                switch child {
+                case .section(let section):
+                    SectionTreeRow(section: section)
+                case .group(let childGroup):
+                    SectionGroupTreeRow(group: childGroup)
+                }
             }
             if model.isLoadingSectionGroup(group) {
                 LoadingTreeRow(title: "Loading sections")
             }
         } label: {
             HStack {
-                Label(group.displayName, systemImage: "folder")
-                    .lineLimit(1)
+                Toggle(isOn: isSelected) {
+                    TreeItemLabel(title: group.displayName, systemImage: "folder")
+                }
+                .toggleStyle(.checkbox)
                 Spacer()
                 if model.isLoadingSectionGroup(group) {
                     ProgressView()
                         .controlSize(.small)
                 }
             }
+            .padding(.vertical, 2)
         }
         .tag("group:\(group.id)")
+        .contextMenu {
+            Button {
+                model.renameSectionGroup(group)
+            } label: {
+                Label("Rename Folder", systemImage: "pencil")
+            }
+            .disabled(model.isBusy || model.auth.account == nil)
+        }
         .onChange(of: isExpanded) { _, expanded in
             if expanded {
                 model.selectTreeItem("group:\(group.id)")
                 model.loadSectionGroupContentsIfNeeded(group)
             }
         }
+    }
+}
+
+private enum TreeChild: Identifiable {
+    case section(SectionNode)
+    case group(SectionGroupNode)
+
+    var id: String {
+        switch self {
+        case .section(let section): "section:\(section.id)"
+        case .group(let group): "group:\(group.id)"
+        }
+    }
+
+    private var displayName: String {
+        switch self {
+        case .section(let section): section.displayName
+        case .group(let group): group.displayName
+        }
+    }
+
+    private var createdDateTime: Date? {
+        switch self {
+        case .section(let section): section.createdDateTime
+        case .group(let group): group.createdDateTime
+        }
+    }
+
+    static func sorted(sections: [SectionNode], groups: [SectionGroupNode]) -> [TreeChild] {
+        (sections.map(TreeChild.section) + groups.map(TreeChild.group))
+            .sorted {
+                if let lhsDate = $0.createdDateTime, let rhsDate = $1.createdDateTime, lhsDate != rhsDate {
+                    return lhsDate < rhsDate
+                }
+                if $0.createdDateTime != nil, $1.createdDateTime == nil { return true }
+                if $0.createdDateTime == nil, $1.createdDateTime != nil { return false }
+                let comparison = $0.displayName.localizedStandardCompare($1.displayName)
+                return comparison == .orderedSame ? $0.id < $1.id : comparison == .orderedAscending
+            }
     }
 }
 
@@ -213,12 +283,20 @@ private struct SectionTreeRow: View {
             }
         } label: {
             Toggle(isOn: isSelected) {
-                Label(section.displayName, systemImage: "folder")
-                    .lineLimit(1)
+                TreeItemLabel(title: section.displayName, systemImage: "folder")
             }
             .toggleStyle(.checkbox)
+            .padding(.vertical, 2)
         }
         .tag("section:\(section.id)")
+        .contextMenu {
+            Button {
+                model.renameSection(section)
+            } label: {
+                Label("Rename Section", systemImage: "pencil")
+            }
+            .disabled(model.isBusy || model.auth.account == nil)
+        }
         .onChange(of: isExpanded) { _, expanded in
             if expanded {
                 model.selectTreeItem("section:\(section.id)")
@@ -242,11 +320,26 @@ private struct PageTreeRow: View {
 
     var body: some View {
         Toggle(isOn: isSelected) {
-            Label(page.title, systemImage: "doc.text")
-                .lineLimit(1)
+            TreeItemLabel(title: page.title, systemImage: "doc.text")
         }
         .toggleStyle(.checkbox)
+        .padding(.vertical, 1)
         .tag("page:\(page.id)")
+    }
+}
+
+private struct TreeItemLabel: View {
+    let title: String
+    let systemImage: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: systemImage)
+                .symbolRenderingMode(.hierarchical)
+                .frame(width: 18, alignment: .center)
+            Text(title)
+                .lineLimit(1)
+        }
     }
 }
 

@@ -78,6 +78,10 @@ struct ToolDetailView: View {
             targetSectionField
         case .exportText, .exportHTML, .backup:
             outputChooser(label: "Store folder")
+        case .exportImages:
+            Toggle("Include drawings and annotations", isOn: $model.includeDrawings)
+            Toggle("Also create a PDF for each OneNote page", isOn: $model.createImagePDF)
+            outputChooser(label: "Store folder")
         case .importText:
             importFileChooser(label: "Text files", extensions: ["txt"])
             targetSectionField

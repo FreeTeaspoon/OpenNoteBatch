@@ -5,32 +5,37 @@ struct ImportService {
     let repository: OneNoteRepository
     let client: GraphClient
 
-    func importText(files: [URL], sectionID: String) async throws -> [BatchResult] {
+    @MainActor
+    func importText(files: [URL], sectionID: String, progress: BatchProgressUpdate? = nil) async throws -> [BatchResult] {
         var results: [BatchResult] = []
-        for file in files {
+        for (index, file) in files.enumerated() {
             let text = try String(contentsOf: file, encoding: .utf8)
             let title = file.deletingPathExtension().lastPathComponent
             try await repository.createPage(sectionID: sectionID, html: OneNoteHTML.textHTML(title: title, text: text))
             results.append(.init(name: file.lastPathComponent, path: file.path, status: .success, message: "Created OneNote page."))
+            await progress?(index + 1, files.count, "Imported \(file.lastPathComponent).")
         }
         return results
     }
 
-    func importHTML(files: [URL], sectionID: String) async throws -> [BatchResult] {
+    @MainActor
+    func importHTML(files: [URL], sectionID: String, progress: BatchProgressUpdate? = nil) async throws -> [BatchResult] {
         var results: [BatchResult] = []
-        for file in files {
+        for (index, file) in files.enumerated() {
             let html = try String(contentsOf: file, encoding: .utf8)
             let title = OneNoteHTML.title(from: html, fallback: file.deletingPathExtension().lastPathComponent)
             let pageHTML = html.localizedCaseInsensitiveContains("<html") ? html : OneNoteHTML.htmlPage(title: title, body: html)
             try await repository.createPage(sectionID: sectionID, html: pageHTML)
             results.append(.init(name: file.lastPathComponent, path: file.path, status: .success, message: "Created OneNote page."))
+            await progress?(index + 1, files.count, "Imported \(file.lastPathComponent).")
         }
         return results
     }
 
-    func importImages(files: [URL], sectionID: String) async throws -> [BatchResult] {
+    @MainActor
+    func importImages(files: [URL], sectionID: String, progress: BatchProgressUpdate? = nil) async throws -> [BatchResult] {
         var results: [BatchResult] = []
-        for file in files {
+        for (index, file) in files.enumerated() {
             let data = try Data(contentsOf: file)
             let title = file.deletingPathExtension().lastPathComponent
             let contentType = UTType(filenameExtension: file.pathExtension)?.preferredMIMEType ?? "image/png"
@@ -43,11 +48,19 @@ struct ImportService {
             multipart.addFilePart(name: "image1", filename: file.lastPathComponent, contentType: contentType, data: data)
             try await client.postMultipart("/me/onenote/sections/\(sectionID.urlPathEscaped)/pages", builder: multipart)
             results.append(.init(name: file.lastPathComponent, path: file.path, status: .success, message: "Created image page."))
+            await progress?(index + 1, files.count, "Imported \(file.lastPathComponent).")
         }
         return results
     }
 
-    func importTree(root: URL, sectionID: String, includeText: Bool, includeHTML: Bool) async throws -> [BatchResult] {
+    @MainActor
+    func importTree(
+        root: URL,
+        sectionID: String,
+        includeText: Bool,
+        includeHTML: Bool,
+        progress: BatchProgressUpdate? = nil
+    ) async throws -> [BatchResult] {
         let files = try FileManager.default
             .contentsOfDirectory(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles])
             .filter { url in
@@ -57,12 +70,20 @@ struct ImportService {
         var results: [BatchResult] = []
         let textFiles = files.filter { $0.pathExtension.lowercased() == "txt" }
         let htmlFiles = files.filter { ["html", "htm"].contains($0.pathExtension.lowercased()) }
-        results.append(contentsOf: try await importText(files: textFiles, sectionID: sectionID))
-        results.append(contentsOf: try await importHTML(files: htmlFiles, sectionID: sectionID))
+        var completed = 0
+        results.append(contentsOf: try await importText(files: textFiles, sectionID: sectionID) { _, _, message in
+            completed += 1
+            await progress?(completed, files.count, message)
+        })
+        results.append(contentsOf: try await importHTML(files: htmlFiles, sectionID: sectionID) { _, _, message in
+            completed += 1
+            await progress?(completed, files.count, message)
+        })
         return results
     }
 
-    func importEvernote(file: URL, sectionID: String) async throws -> [BatchResult] {
+    @MainActor
+    func importEvernote(file: URL, sectionID: String, progress: BatchProgressUpdate? = nil) async throws -> [BatchResult] {
         let enex = try String(contentsOf: file, encoding: .utf8)
         let notePattern = #"<note>[\s\S]*?</note>"#
         let notes = matches(pattern: notePattern, in: enex)
@@ -73,9 +94,11 @@ struct ImportService {
             let html = OneNoteHTML.htmlPage(title: title, body: content)
             try await repository.createPage(sectionID: sectionID, html: html)
             results.append(.init(name: title, path: file.path, status: .success, message: "Imported ENEX note."))
+            await progress?(index + 1, notes.count, "Imported \(title).")
         }
         if notes.isEmpty {
             results.append(.init(name: file.lastPathComponent, path: file.path, status: .warning, message: "No ENEX notes found."))
+            await progress?(1, 1, "No ENEX notes found.")
         }
         return results
     }
@@ -106,4 +129,3 @@ private extension String {
         addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? self
     }
 }
-

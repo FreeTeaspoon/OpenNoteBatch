@@ -22,6 +22,8 @@ final class AppViewModel: ObservableObject {
     @Published var importFiles: [URL] = []
     @Published var importRoot: URL?
     @Published var includeImages = false
+    @Published var includeDrawings = true
+    @Published var createImagePDF = false
     @Published var matchCase = false
     @Published var titleOnlySearch = true
     @Published var searchText = ""
@@ -37,6 +39,8 @@ final class AppViewModel: ObservableObject {
     let auth = AuthService()
     private var cancellables = Set<AnyCancellable>()
     private var pendingSectionSelections: [String: Bool] = [:]
+    private var pendingSectionGroupSelections: [String: Bool] = [:]
+    private var sectionGroupSelectionStates: [String: Bool] = [:]
 
     var selectedTool: ToolDefinition {
         ToolDefinition.all.first { $0.id == selectedToolID } ?? ToolDefinition.all[0]
@@ -112,11 +116,15 @@ final class AppViewModel: ObservableObject {
     func loadNotebookTree() {
         Task {
             await self.runBusy(title: "Loading notebooks") {
+                self.statusMessage = "Connecting to Microsoft Graph..."
                 let repository = try await self.makeRepository()
+                self.statusMessage = "Loading notebooks..."
                 let loadedNotebooks = try await repository.notebooks()
                 self.selectedPageIDs = []
                 self.selectedSectionID = nil
                 self.pendingSectionSelections = [:]
+                self.pendingSectionGroupSelections = [:]
+                self.sectionGroupSelectionStates = [:]
                 self.loadingNodeIDs = []
                 self.loadedNodeIDs = []
                 self.notebooks = loadedNotebooks
@@ -180,6 +188,13 @@ final class AppViewModel: ObservableObject {
                     $0.sectionGroups = loadedChildGroups
                 }
                 self.loadedNodeIDs.insert(key)
+                if let pendingSelection = self.pendingSectionGroupSelections.removeValue(forKey: group.id) {
+                    self.applySectionGroupSelection(
+                        sections: loadedSections,
+                        groups: loadedChildGroups,
+                        isSelected: pendingSelection
+                    )
+                }
                 self.statusMessage = "Loaded sections for \(group.displayName)."
             } catch {
                 self.results = [.init(name: group.displayName, path: "", status: .failed, message: error.localizedDescription)]
@@ -244,8 +259,39 @@ final class AppViewModel: ObservableObject {
         loadedNodeIDs.contains(nodeKey("section", section.id))
     }
 
+    func hasLoadedSectionGroup(_ group: SectionGroupNode) -> Bool {
+        loadedNodeIDs.contains(nodeKey("group", group.id))
+    }
+
+    func isSectionGroupSelected(_ group: SectionGroupNode) -> Bool {
+        if let explicit = sectionGroupSelectionStates[group.id] {
+            return explicit
+        }
+        let descendantPages = group.sections.flatMap(\.pages) + pages(in: group.sectionGroups)
+        return !descendantPages.isEmpty
+            && descendantPages.allSatisfy { selectedPageIDs.contains($0.id) }
+    }
+
     func togglePage(_ page: PageNode, isSelected: Bool) {
+        sectionGroupSelectionStates.removeAll()
         selectedTreeItemID = "page:\(page.id)"
+        setPageSelection(page, isSelected: isSelected)
+    }
+
+    func toggleSection(_ section: SectionNode, isSelected: Bool) {
+        sectionGroupSelectionStates.removeAll()
+        selectedSectionID = section.id
+        selectedTreeItemID = "section:\(section.id)"
+        setSectionSelection(section, isSelected: isSelected)
+    }
+
+    func toggleSectionGroup(_ group: SectionGroupNode, isSelected: Bool) {
+        selectedTreeItemID = "group:\(group.id)"
+        setSectionGroupSelection(group, isSelected: isSelected)
+        selectedTreeItemID = "group:\(group.id)"
+    }
+
+    private func setPageSelection(_ page: PageNode, isSelected: Bool) {
         if isSelected {
             selectedPageIDs.insert(page.id)
         } else {
@@ -253,18 +299,98 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    func toggleSection(_ section: SectionNode, isSelected: Bool) {
-        selectedSectionID = section.id
-        selectedTreeItemID = "section:\(section.id)"
+    private func setSectionSelection(_ section: SectionNode, isSelected: Bool) {
         if section.pages.isEmpty && !hasLoadedSection(section) {
             pendingSectionSelections[section.id] = isSelected
             loadSectionPagesIfNeeded(section)
             return
         }
         for page in section.pages {
-            togglePage(page, isSelected: isSelected)
+            setPageSelection(page, isSelected: isSelected)
         }
-        selectedTreeItemID = "section:\(section.id)"
+    }
+
+    private func setSectionGroupSelection(_ group: SectionGroupNode, isSelected: Bool) {
+        sectionGroupSelectionStates[group.id] = isSelected
+        if !hasLoadedSectionGroup(group) {
+            pendingSectionGroupSelections[group.id] = isSelected
+            loadSectionGroupContentsIfNeeded(group)
+            return
+        }
+        applySectionGroupSelection(
+            sections: group.sections,
+            groups: group.sectionGroups,
+            isSelected: isSelected
+        )
+    }
+
+    private func applySectionGroupSelection(
+        sections: [SectionNode],
+        groups: [SectionGroupNode],
+        isSelected: Bool
+    ) {
+        for section in sections {
+            setSectionSelection(section, isSelected: isSelected)
+        }
+        for group in groups {
+            setSectionGroupSelection(group, isSelected: isSelected)
+        }
+    }
+
+    func renameNotebook(_ notebook: NotebookNode) {
+        guard let newName = promptForRename(title: "Rename Notebook", currentName: notebook.displayName) else { return }
+        Task {
+            await runBusy(title: "Rename Notebook") {
+                let repository = try await self.makeRepository()
+                try await repository.renameNotebook(notebookID: notebook.id, displayName: newName)
+                self.updateNotebook(id: notebook.id) {
+                    $0.displayName = newName
+                }
+                self.selectedNotebookID = notebook.id
+                self.selectedTreeItemID = "notebook:\(notebook.id)"
+                self.statusMessage = "Renamed notebook to \(newName)."
+                return [.init(name: notebook.displayName, path: newName, status: .success, message: "Renamed notebook.")]
+            }
+        }
+    }
+
+    func renameSectionGroup(_ group: SectionGroupNode) {
+        guard let newName = promptForRename(title: "Rename Folder", currentName: group.displayName) else { return }
+        Task {
+            await runBusy(title: "Rename Folder") {
+                let repository = try await self.makeRepository()
+                try await repository.renameSectionGroup(sectionGroupID: group.id, displayName: newName)
+                self.updateSectionGroup(id: group.id) {
+                    $0.displayName = newName
+                }
+                self.selectedTreeItemID = "group:\(group.id)"
+                self.statusMessage = "Renamed folder to \(newName)."
+                return [.init(name: group.displayName, path: newName, status: .success, message: "Renamed folder.")]
+            }
+        }
+    }
+
+    func renameSection(_ section: SectionNode) {
+        guard let newName = promptForRename(title: "Rename Section", currentName: section.displayName) else { return }
+        Task {
+            await runBusy(title: "Rename Section") {
+                let repository = try await self.makeRepository()
+                try await repository.renameSection(sectionID: section.id, displayName: newName)
+                self.updateSection(id: section.id) {
+                    $0.displayName = newName
+                    for pageIndex in $0.pages.indices {
+                        let sectionName = [$0.groupPath, newName]
+                            .filter { !$0.isEmpty }
+                            .joined(separator: " / ")
+                        $0.pages[pageIndex].sectionName = sectionName
+                    }
+                }
+                self.selectedSectionID = section.id
+                self.selectedTreeItemID = "section:\(section.id)"
+                self.statusMessage = "Renamed section to \(newName)."
+                return [.init(name: section.displayName, path: newName, status: .success, message: "Renamed section.")]
+            }
+        }
     }
 
     func chooseOutputFolder() {
@@ -309,40 +435,83 @@ final class AppViewModel: ObservableObject {
                 let exportService = ExportService(repository: repository, client: client)
                 let importService = ImportService(repository: repository, client: client)
                 let runner = BatchRunner(repository: repository, exportService: exportService, importService: importService)
+                let progress = self.progressReporter(title: self.selectedTool.title)
 
                 switch self.selectedToolID {
                 case .attachmentList:
-                    return try await self.runAttachmentList(exportService: exportService)
+                    return try await self.runAttachmentList(exportService: exportService, progress: progress)
                 case .tagList:
-                    return try await self.runTagList(repository: repository)
+                    return try await self.runTagList(repository: repository, progress: progress)
                 case .replacePageTitle:
-                    return try await self.runReplacePageTitle(repository: repository)
+                    return try await self.runReplacePageTitle(repository: repository, progress: progress)
                 case .search:
-                    return try await self.runSearch(repository: repository)
+                    return try await self.runSearch(repository: repository, progress: progress)
                 case .findLost, .sectionSize:
                     return runner.unsupported(self.selectedTool)
                 case .copySections:
-                    return try await self.runCopySections(repository: repository)
+                    return try await self.runCopySections(repository: repository, progress: progress)
                 case .exportText:
-                    return try await exportService.exportText(pages: self.requiredPages(), outputDirectory: self.resolvedOutputDirectory())
+                    return try await exportService.exportText(
+                        pages: self.requiredPages(),
+                        outputDirectory: self.resolvedOutputDirectory(),
+                        progress: progress
+                    )
                 case .exportHTML:
-                    return try await exportService.exportHTML(pages: self.requiredPages(), outputDirectory: self.resolvedOutputDirectory())
+                    return try await exportService.exportHTML(
+                        pages: self.requiredPages(),
+                        outputDirectory: self.resolvedOutputDirectory(),
+                        progress: progress
+                    )
+                case .exportImages:
+                    return try await exportService.exportImages(
+                        pages: self.requiredPages(),
+                        outputDirectory: self.resolvedOutputDirectory(),
+                        includeDrawings: self.includeDrawings,
+                        createPDF: self.createImagePDF,
+                        progress: progress
+                    )
                 case .backup:
-                    return try await exportService.backup(pages: self.requiredPages(), outputDirectory: self.resolvedOutputDirectory())
+                    return try await exportService.backup(
+                        pages: self.requiredPages(),
+                        outputDirectory: self.resolvedOutputDirectory(),
+                        progress: progress
+                    )
                 case .importText:
-                    return try await importService.importText(files: self.requiredImportFiles(), sectionID: self.requiredTargetSection())
+                    return try await importService.importText(
+                        files: self.requiredImportFiles(),
+                        sectionID: self.requiredTargetSection(),
+                        progress: progress
+                    )
                 case .importHTML, .importMacNotes, .importGoogleKeep:
-                    return try await importService.importHTML(files: self.requiredImportFiles(), sectionID: self.requiredTargetSection())
+                    return try await importService.importHTML(
+                        files: self.requiredImportFiles(),
+                        sectionID: self.requiredTargetSection(),
+                        progress: progress
+                    )
                 case .importImages:
-                    return try await importService.importImages(files: self.requiredImportFiles(), sectionID: self.requiredTargetSection())
+                    return try await importService.importImages(
+                        files: self.requiredImportFiles(),
+                        sectionID: self.requiredTargetSection(),
+                        progress: progress
+                    )
                 case .importTree:
                     guard let importRoot = self.importRoot else { throw OpenNoteError.selectionRequired("Choose a source folder first.") }
-                    return try await importService.importTree(root: importRoot, sectionID: self.requiredTargetSection(), includeText: true, includeHTML: true)
+                    return try await importService.importTree(
+                        root: importRoot,
+                        sectionID: self.requiredTargetSection(),
+                        includeText: true,
+                        includeHTML: true,
+                        progress: progress
+                    )
                 case .importEvernote:
                     guard let file = try self.requiredImportFiles().first else { throw OpenNoteError.selectionRequired("Choose an ENEX file first.") }
-                    return try await importService.importEvernote(file: file, sectionID: self.requiredTargetSection())
+                    return try await importService.importEvernote(
+                        file: file,
+                        sectionID: self.requiredTargetSection(),
+                        progress: progress
+                    )
                 case .restore:
-                    return try await self.runRestore(importService: importService)
+                    return try await self.runRestore(importService: importService, progress: progress)
                 case .account:
                     return self.accountResults()
                 }
@@ -352,8 +521,9 @@ final class AppViewModel: ObservableObject {
 
     private func runBusy(title: String, work: @escaping () async throws -> [BatchResult]) async {
         isBusy = true
-        task = BatchTask(title: title, progress: 0.25, status: .running)
+        task = BatchTask(title: title, progress: 0, status: .running)
         results = []
+        statusMessage = "\(title)..."
         do {
             let output = try await work()
             results = output
@@ -365,6 +535,38 @@ final class AppViewModel: ObservableObject {
             statusMessage = error.localizedDescription
         }
         isBusy = false
+    }
+
+    private func progressReporter(title: String) -> BatchProgressUpdate {
+        { completed, total, message in
+            await MainActor.run {
+                let total = max(total, 1)
+                let rawProgress = Double(completed) / Double(total)
+                let boundedProgress = min(max(rawProgress, 0), 0.98)
+                let progress = max(self.task.progress, boundedProgress)
+                self.task = BatchTask(title: title, progress: progress, status: .running)
+                self.statusMessage = message
+            }
+        }
+    }
+
+    private func promptForRename(title: String, currentName: String) -> String? {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = "Enter a new name."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+
+        let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        textField.stringValue = currentName
+        textField.selectText(nil)
+        alert.accessoryView = textField
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let newName = textField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newName.isEmpty, newName != currentName else { return nil }
+        return newName
     }
 
     private func makeGraphClient() async throws -> GraphClient {
@@ -400,12 +602,12 @@ final class AppViewModel: ObservableObject {
         return downloads.appendingPathComponent("OpenNote Batch")
     }
 
-    private func runAttachmentList(exportService: ExportService) async throws -> [BatchResult] {
+    private func runAttachmentList(exportService: ExportService, progress: BatchProgressUpdate? = nil) async throws -> [BatchResult] {
         let pages = try requiredPages()
         if outputDirectory == nil {
             var listing: [BatchResult] = []
             let repository = exportService.repository
-            for page in pages {
+            for (index, page) in pages.enumerated() {
                 let resources = try await repository.attachments(on: page, includeImages: includeImages)
                 listing.append(contentsOf: resources.map {
                     BatchResult(name: $0.fileName, path: page.title, status: .ready, message: "Ready to save.")
@@ -413,59 +615,79 @@ final class AppViewModel: ObservableObject {
                 if resources.isEmpty {
                     listing.append(.init(name: page.title, path: "", status: .warning, message: "No attachments found."))
                 }
+                await progress?(index + 1, pages.count, "Scanned \(page.title).")
             }
             return listing
         }
-        return try await exportService.saveAttachments(pages: pages, outputDirectory: resolvedOutputDirectory(), includeImages: includeImages)
+        return try await exportService.saveAttachments(
+            pages: pages,
+            outputDirectory: resolvedOutputDirectory(),
+            includeImages: includeImages,
+            progress: progress
+        )
     }
 
-    private func runTagList(repository: OneNoteRepository) async throws -> [BatchResult] {
+    private func runTagList(repository: OneNoteRepository, progress: BatchProgressUpdate? = nil) async throws -> [BatchResult] {
         var output: [BatchResult] = []
-        for page in try requiredPages() {
+        let pages = try requiredPages()
+        for (index, page) in pages.enumerated() {
             let tags = try await repository.tags(on: page)
             output.append(contentsOf: tags)
             if tags.isEmpty {
                 output.append(.init(name: page.title, path: page.sectionName ?? "", status: .warning, message: "No tags found."))
             }
+            await progress?(index + 1, pages.count, "Scanned \(page.title).")
         }
         return output
     }
 
-    private func runSearch(repository: OneNoteRepository) async throws -> [BatchResult] {
+    private func runSearch(repository: OneNoteRepository, progress: BatchProgressUpdate? = nil) async throws -> [BatchResult] {
         let pages = selectedPages.isEmpty ? allPages : selectedPages
         guard !pages.isEmpty else { throw OpenNoteError.selectionRequired("Load notebooks and select pages, or search all loaded pages.") }
-        return try await repository.search(query: searchText, pages: pages, titleOnly: titleOnlySearch, matchCase: matchCase)
+        return try await repository.search(
+            query: searchText,
+            pages: pages,
+            titleOnly: titleOnlySearch,
+            matchCase: matchCase,
+            progress: progress
+        )
     }
 
-    private func runReplacePageTitle(repository: OneNoteRepository) async throws -> [BatchResult] {
+    private func runReplacePageTitle(repository: OneNoteRepository, progress: BatchProgressUpdate? = nil) async throws -> [BatchResult] {
         guard !searchText.isEmpty else { throw OpenNoteError.selectionRequired("Enter text to find in page titles.") }
         let pages = try requiredPages()
         var output: [BatchResult] = []
-        for page in pages {
+        for (index, page) in pages.enumerated() {
             let source = matchCase ? page.title : page.title.lowercased()
             let needle = matchCase ? searchText : searchText.lowercased()
-            guard source.contains(needle) else { continue }
-            let newTitle = matchCase
-                ? page.title.replacingOccurrences(of: searchText, with: replaceText)
-                : page.title.replacingOccurrences(of: searchText, with: replaceText, options: .caseInsensitive)
-            try await repository.renamePage(pageID: page.id, title: newTitle)
-            output.append(.init(name: page.title, path: newTitle, status: .success, message: "Renamed page."))
+            if source.contains(needle) {
+                let newTitle = matchCase
+                    ? page.title.replacingOccurrences(of: searchText, with: replaceText)
+                    : page.title.replacingOccurrences(of: searchText, with: replaceText, options: .caseInsensitive)
+                try await repository.renamePage(pageID: page.id, title: newTitle)
+                output.append(.init(name: page.title, path: newTitle, status: .success, message: "Renamed page."))
+                await progress?(index + 1, pages.count, "Renamed \(page.title).")
+            } else {
+                await progress?(index + 1, pages.count, "Checked \(page.title).")
+            }
         }
         return output.isEmpty ? [.init(name: "Replace Page Title", path: "", status: .warning, message: "No selected page titles matched.")] : output
     }
 
-    private func runCopySections(repository: OneNoteRepository) async throws -> [BatchResult] {
+    private func runCopySections(repository: OneNoteRepository, progress: BatchProgressUpdate? = nil) async throws -> [BatchResult] {
         let target = try requiredTargetSection()
         var output: [BatchResult] = []
-        for page in try requiredPages() {
+        let pages = try requiredPages()
+        for (index, page) in pages.enumerated() {
             let html = try await repository.pageContent(pageID: page.id)
             try await repository.createPage(sectionID: target, html: html)
             output.append(.init(name: page.title, path: target, status: .success, message: "Copied page HTML into target section."))
+            await progress?(index + 1, pages.count, "Copied \(page.title).")
         }
         return output
     }
 
-    private func runRestore(importService: ImportService) async throws -> [BatchResult] {
+    private func runRestore(importService: ImportService, progress: BatchProgressUpdate? = nil) async throws -> [BatchResult] {
         guard let manifestFile = importFiles.first else {
             throw OpenNoteError.selectionRequired("Choose a manifest.json file first.")
         }
@@ -473,7 +695,7 @@ final class AppViewModel: ObservableObject {
         decoder.dateDecodingStrategy = .iso8601
         let manifest = try decoder.decode(BackupManifest.self, from: Data(contentsOf: manifestFile))
         let htmlFiles = manifest.pages.map { URL(fileURLWithPath: $0.htmlPath) }
-        return try await importService.importHTML(files: htmlFiles, sectionID: requiredTargetSection())
+        return try await importService.importHTML(files: htmlFiles, sectionID: requiredTargetSection(), progress: progress)
     }
 
     private func accountResults() -> [BatchResult] {

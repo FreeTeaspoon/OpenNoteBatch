@@ -19,11 +19,17 @@ struct ToolPickerView: View {
             ForEach(WorkspaceTab.allCases) { tab in
                 let tools = filteredTools(for: tab)
                 if !tools.isEmpty {
-                    Section(tab.rawValue) {
+                    Section {
                         ForEach(tools) { tool in
                             ToolRow(tool: tool)
                                 .tag(tool.id)
+                                .listRowInsets(EdgeInsets(top: 5, leading: 12, bottom: 5, trailing: 12))
                         }
+                    } header: {
+                        Text(tab.rawValue)
+                            .padding(.top, 6)
+                            .padding(.bottom, 4)
+                            .textCase(nil)
                     }
                 }
             }
@@ -84,6 +90,7 @@ private struct ToolRow: View {
                     .help("Limited by public Microsoft Graph APIs")
             }
         }
-        .padding(.vertical, 3)
+        .padding(.vertical, 2)
+        .contentShape(Rectangle())
     }
 }

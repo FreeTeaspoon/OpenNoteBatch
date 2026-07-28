@@ -125,6 +125,7 @@ struct TokenSet: Codable, Equatable {
 struct NotebookNode: Identifiable, Codable, Equatable {
     var id: String
     var displayName: String
+    var createdDateTime: Date? = nil
     var sections: [SectionNode] = []
     var sectionGroups: [SectionGroupNode] = []
 }
@@ -133,6 +134,7 @@ struct SectionGroupNode: Identifiable, Codable, Equatable {
     var id: String
     var displayName: String
     var notebookID: String?
+    var createdDateTime: Date? = nil
     var parentPath: String = ""
     var sections: [SectionNode] = []
     var sectionGroups: [SectionGroupNode] = []
@@ -142,6 +144,7 @@ struct SectionNode: Identifiable, Codable, Equatable {
     var id: String
     var displayName: String
     var notebookID: String?
+    var createdDateTime: Date? = nil
     var groupPath: String = ""
     var pages: [PageNode] = []
 }
@@ -154,6 +157,20 @@ struct PageNode: Identifiable, Codable, Equatable, Hashable {
     var contentURL: String?
     var notebookName: String?
     var sectionName: String?
+    var level: Int? = nil
+    var order: Int? = nil
+}
+
+enum OneNoteOrdering {
+    static func pages(_ pages: [PageNode]) -> [PageNode] {
+        pages.enumerated()
+            .sorted { lhs, rhs in
+                let lhsOrder = lhs.element.order ?? Int.max
+                let rhsOrder = rhs.element.order ?? Int.max
+                return lhsOrder == rhsOrder ? lhs.offset < rhs.offset : lhsOrder < rhsOrder
+            }
+            .map(\.element)
+    }
 }
 
 enum BatchStatus: String, Codable {
@@ -184,10 +201,28 @@ struct AttachmentResource: Identifiable, Codable, Equatable {
     var id = UUID()
     var fileName: String
     var resourceURL: URL
+    var alternateResourceURL: URL? = nil
     var mediaType: String?
     var pageTitle: String
     var pageID: String
     var kind: String
+    var pageTop: Double? = nil
+    var pageLeft: Double? = nil
+    var displayWidth: Double? = nil
+    var displayHeight: Double? = nil
+    var documentIndex: Int = 0
+}
+
+struct OneNotePageContent: Equatable {
+    var html: String
+    var inkML: [String] = []
+}
+
+struct InkStroke: Equatable {
+    var points: [CGPoint]
+    var colorHex: String
+    var width: Double
+    var opacity: Double
 }
 
 struct ImportItem: Identifiable, Codable, Equatable {
@@ -216,6 +251,7 @@ enum ToolID: String, CaseIterable, Identifiable {
     case copySections
     case exportText
     case exportHTML
+    case exportImages
     case backup
     case importText
     case importHTML
@@ -248,6 +284,7 @@ struct ToolDefinition: Identifiable, Equatable {
         .init(id: .copySections, tab: .home, title: "Copy Sections", subtitle: "Copy selected pages into another section.", symbol: "rectangle.stack.badge.plus", isGraphSupported: true),
         .init(id: .exportText, tab: .export, title: "Export pages to TXT files", subtitle: "Write selected pages as plain text.", symbol: "doc.plaintext", isGraphSupported: true),
         .init(id: .exportHTML, tab: .export, title: "Export pages to HTML files", subtitle: "Write selected pages as raw OneNote HTML.", symbol: "doc.richtext", isGraphSupported: true),
+        .init(id: .exportImages, tab: .export, title: "Export embedded images", subtitle: "Save images in visual page order, with optional drawings and PDF output.", symbol: "photo.on.rectangle.angled", isGraphSupported: true),
         .init(id: .backup, tab: .export, title: "Backup", subtitle: "Export HTML, text, attachments, and a manifest.", symbol: "externaldrive.badge.timemachine", isGraphSupported: true),
         .init(id: .importText, tab: .import, title: "Import txt files to OneNote", subtitle: "Create pages from text files.", symbol: "doc.text", isGraphSupported: true),
         .init(id: .importHTML, tab: .import, title: "Import HTML files to OneNote", subtitle: "Create pages from HTML files.", symbol: "curlybraces.square", isGraphSupported: true),
