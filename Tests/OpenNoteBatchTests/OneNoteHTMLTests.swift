@@ -185,6 +185,59 @@ struct OneNoteContentParserTests {
         #expect((try Data(contentsOf: pdfURL)).starts(with: Data("%PDF".utf8)))
     }
 
+    @Test @MainActor func rendersPageAnnotationOutsideEmbeddedImage() throws {
+        let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 20,
+            pixelsHigh: 20,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        )!
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+        NSColor.white.setFill()
+        NSRect(x: 0, y: 0, width: 20, height: 20).fill()
+        NSGraphicsContext.restoreGraphicsState()
+        let imageData = bitmap.representation(using: .png, properties: [:])!
+        let resource = AttachmentResource(
+            fileName: "image-001.png",
+            resourceURL: URL(string: "https://graph.microsoft.com/v1.0/me/onenote/resources/r1/content")!,
+            mediaType: "image/png",
+            pageTitle: "Page",
+            pageID: "p1",
+            kind: "image",
+            pageTop: 20,
+            pageLeft: 20,
+            displayWidth: 20,
+            displayHeight: 20
+        )
+        let outsideStroke = InkStroke(
+            points: [CGPoint(x: 50, y: 25), CGPoint(x: 60, y: 25)],
+            colorHex: "#FF0000",
+            width: 2,
+            opacity: 1
+        )
+
+        let rendered = try ImageExportRenderer.renderPage(
+            images: [(resource: resource, data: imageData)],
+            strokes: [outsideStroke]
+        )
+
+        guard let rendered else {
+            Issue.record("Expected a full-page composite when ink is outside the image frame.")
+            return
+        }
+        let output = try #require(NSBitmapImageRep(data: rendered.data))
+        #expect(rendered.includedDrawings)
+        #expect(output.pixelsWide > 20)
+        #expect(output.pixelsHigh > 20)
+    }
+
     @Test @MainActor func detectsUnsupportedFullResolutionImageData() throws {
         let bitmap = NSBitmapImageRep(
             bitmapDataPlanes: nil,

@@ -70,6 +70,7 @@ struct ExportService {
             total += attachments.count
                 + images.count
                 + (includeImages && createPDF && !images.isEmpty ? 1 : 0)
+                + (includeImages && includeDrawings && !images.isEmpty && !strokes.isEmpty ? 1 : 0)
             completed += 1
             var discovered: [String] = []
             if includeAttachments {
@@ -137,6 +138,7 @@ struct ExportService {
                 } else {
                     try FileManager.default.createDirectory(at: pageDirectory, withIntermediateDirectories: true)
                     var renderedImages: [Data] = []
+                    var downloadedImages: [(resource: AttachmentResource, data: Data)] = []
 
                     for (imageIndex, resource) in images.enumerated() {
                         let downloaded: Data
@@ -163,6 +165,8 @@ struct ExportService {
                             await progress?(completed, total, "Skipped unavailable \(resource.fileName).")
                             continue
                         }
+
+                        downloadedImages.append((resource: currentResource, data: downloaded))
 
                         let rendered = try ImageExportRenderer.render(
                             imageData: downloaded,
@@ -193,17 +197,63 @@ struct ExportService {
                         await progress?(completed, total, "Exported \(target.lastPathComponent).")
                     }
 
-                    if createPDF, !renderedImages.isEmpty {
+                    var pdfImages = renderedImages
+                    var usedFullPageComposite = false
+                    if includeDrawings, !strokes.isEmpty {
+                        if downloadedImages.count != images.count {
+                            results.append(.init(
+                                name: page.title,
+                                path: pageDirectory.path,
+                                status: .warning,
+                                message: "The full-page annotated image was not created because one or more embedded images could not be downloaded."
+                            ))
+                            completed += 1
+                            await progress?(completed, total, "Skipped full-page annotation composite for \(page.title).")
+                        } else if let pageComposite = try ImageExportRenderer.renderPage(
+                            images: downloadedImages,
+                            strokes: strokes
+                        ) {
+                            let compositeTarget = fileNamer.next(
+                                in: pageDirectory,
+                                name: "\(Filename.safe(page.title))-annotated.png"
+                            )
+                            try pageComposite.data.write(to: compositeTarget, options: .atomic)
+                            results.append(.init(
+                                name: compositeTarget.lastPathComponent,
+                                path: compositeTarget.path,
+                                status: .success,
+                                message: "Saved a full-page composite with all page annotations."
+                            ))
+                            completed += 1
+                            await progress?(completed, total, "Exported \(compositeTarget.lastPathComponent).")
+                            pdfImages = [pageComposite.data]
+                            usedFullPageComposite = true
+                        } else {
+                            results.append(.init(
+                                name: page.title,
+                                path: pageDirectory.path,
+                                status: .warning,
+                                message: "The full-page annotated image was not created because OneNote did not provide absolute image positions."
+                            ))
+                            completed += 1
+                            await progress?(completed, total, "Skipped full-page annotation composite for \(page.title).")
+                        }
+                    }
+
+                    if createPDF, !pdfImages.isEmpty {
                         let pdfTarget = fileNamer.next(
                             in: pageDirectory,
                             name: "\(Filename.safe(page.title)).pdf"
                         )
-                        try ImageExportRenderer.writePDF(images: renderedImages, to: pdfTarget)
+                        try ImageExportRenderer.writePDF(images: pdfImages, to: pdfTarget)
+                        let pdfMessage = usedFullPageComposite
+                            ? "Created a full-page annotated PDF."
+                            : "Created PDF with \(pdfImages.count) image page(s) in visual order."
                         results.append(.init(
                             name: pdfTarget.lastPathComponent,
                             path: pdfTarget.path,
                             status: .success,
-                            message: "Created PDF with \(renderedImages.count) image page(s) in visual order."
+                            message: pdfMessage
                         ))
                         completed += 1
                         await progress?(completed, total, "Created \(pdfTarget.lastPathComponent).")

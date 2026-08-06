@@ -76,12 +76,12 @@ struct ToolDetailView: View {
         case .exportAttachmentsAndImages:
             Toggle("Include file attachments", isOn: $model.includeAttachments)
             Toggle("Include embedded images", isOn: $model.includeImages)
-            Toggle("Include annotations on images", isOn: $model.includeDrawings)
+            Toggle("Include page annotations", isOn: $model.includeDrawings)
                 .disabled(!model.includeImages)
             Toggle("Create a PDF for each OneNote page", isOn: $model.createImagePDF)
                 .disabled(!model.includeImages)
 
-            Text("Attachments are saved in an attachments folder. Images and PDFs are saved alongside each page; PDFs use the rendered images, so enabled annotations are included.")
+            Text("Attachments are saved in an attachments folder. Embedded images remain available individually; when annotations are enabled, a full-page annotated image is also exported so ink outside an image is preserved, and the PDF uses that page composite.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 

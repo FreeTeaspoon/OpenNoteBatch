@@ -18,8 +18,9 @@ project does not reuse any vendor client ID, private assets, or app code.
 - Page search across title or content.
 - Tag list scan from OneNote page HTML.
 - Export selected pages to text, HTML, or backup folders.
-- Export embedded images in their visual top-to-bottom order, optionally compositing
-  overlapping ink drawings and creating a multi-page PDF for each OneNote page.
+- Export embedded images in their visual top-to-bottom order, with optional
+  full-page annotated composites that preserve ink outside image bounds and a
+  PDF for each OneNote page.
 - Import text, HTML, images, and simple folder trees into OneNote sections.
 - Account status and re-login screen.
 - Keychain storage for Microsoft OAuth tokens.
@@ -74,7 +75,10 @@ Paste the client ID into OpenNote Batch's Settings sheet before signing in.
 
 The combined attachment and image export writes to `Downloads/OpenNote Batch` by
 default. Its options independently control file attachments, embedded images,
-annotations, and a PDF for each page.
+page annotations, and a PDF for each page. Individual embedded images are kept,
+and enabling page annotations also writes a page-level `*-annotated.png` file;
+the page PDF uses that full-page composite when it can preserve the OneNote
+coordinates.
 
 Features that Microsoft Graph does not expose safely, such as exact native
 section-size reporting or lost-section recovery, remain visible but return

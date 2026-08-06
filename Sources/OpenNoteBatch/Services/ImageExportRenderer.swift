@@ -22,6 +22,153 @@ enum ImageExportRenderer {
         var includedDrawings: Bool
     }
 
+    /// Renders the page coordinate space instead of cropping ink to one image.
+    ///
+    /// Individual image exports remain image-sized, while this renderer is used
+    /// for the additional page-level annotated output. The tuple order must be
+    /// the visual order returned by `OneNoteHTML.images(from:page:)`.
+    static func renderPage(
+        images: [(resource: AttachmentResource, data: Data)],
+        strokes: [InkStroke]
+    ) throws -> RenderedImage? {
+        guard !images.isEmpty, !strokes.isEmpty else { return nil }
+
+        struct DecodedImage {
+            var image: CGImage
+            var frame: CGRect
+        }
+
+        var decodedImages: [DecodedImage] = []
+        for item in images {
+            guard let image = cgImage(from: item.data) else {
+                throw OpenNoteError.fileSystem("The downloaded resource is not a supported image format.")
+            }
+
+            guard
+                let pageTop = item.resource.pageTop,
+                let pageLeft = item.resource.pageLeft
+            else {
+                // A page composite cannot preserve placement without the
+                // resource's absolute position. The caller can retain the
+                // individual image exports and report this as a warning.
+                return nil
+            }
+
+            let displayWidth = item.resource.displayWidth ?? Double(image.width)
+            let displayHeight = item.resource.displayHeight ?? Double(image.height)
+            guard
+                displayWidth.isFinite,
+                displayHeight.isFinite,
+                displayWidth > 0,
+                displayHeight > 0
+            else {
+                return nil
+            }
+
+            decodedImages.append(DecodedImage(
+                image: image,
+                frame: CGRect(
+                    x: CGFloat(pageLeft),
+                    y: CGFloat(pageTop),
+                    width: CGFloat(displayWidth),
+                    height: CGFloat(displayHeight)
+                )
+            ))
+        }
+
+        let renderableStrokes = strokes.filter { stroke in
+            guard let bounds = stroke.bounds else { return false }
+            return bounds.minX.isFinite
+                && bounds.minY.isFinite
+                && bounds.maxX.isFinite
+                && bounds.maxY.isFinite
+                && !stroke.points.isEmpty
+        }
+        guard !renderableStrokes.isEmpty else { return nil }
+
+        var contentBounds = decodedImages.reduce(CGRect.null) { result, decoded in
+            result.union(decoded.frame)
+        }
+        for stroke in renderableStrokes {
+            guard let bounds = stroke.bounds else { continue }
+            contentBounds = contentBounds.union(
+                bounds.insetBy(dx: CGFloat(stroke.width / 2), dy: CGFloat(stroke.width / 2))
+            )
+        }
+        guard
+            !contentBounds.isNull,
+            contentBounds.width.isFinite,
+            contentBounds.height.isFinite,
+            contentBounds.width > 0,
+            contentBounds.height > 0
+        else {
+            return nil
+        }
+
+        // Keep a small amount of page context around the outermost image or
+        // stroke so handwriting at an edge is not clipped by the export.
+        let pageBounds = contentBounds.insetBy(dx: -24, dy: -24)
+        let sourceScale = decodedImages.map { decoded in
+            max(
+                Double(decoded.image.width) / Double(decoded.frame.width),
+                Double(decoded.image.height) / Double(decoded.frame.height)
+            )
+        }.max() ?? 1
+        let scale = boundedPageScale(
+            sourceScale,
+            width: Double(pageBounds.width),
+            height: Double(pageBounds.height)
+        )
+        let pixelWidth = max(1, Int((Double(pageBounds.width) * scale).rounded(.up)))
+        let pixelHeight = max(1, Int((Double(pageBounds.height) * scale).rounded(.up)))
+
+        guard let context = CGContext(
+            data: nil,
+            width: pixelWidth,
+            height: pixelHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            throw OpenNoteError.fileSystem("Could not create a page drawing surface.")
+        }
+
+        let canvas = CGRect(x: 0, y: 0, width: CGFloat(pixelWidth), height: CGFloat(pixelHeight))
+        context.setFillColor(NSColor.white.cgColor)
+        context.fill(canvas)
+        context.interpolationQuality = .high
+
+        for decoded in decodedImages {
+            let destination = CGRect(
+                x: CGFloat((Double(decoded.frame.minX) - Double(pageBounds.minX)) * scale),
+                y: CGFloat((Double(pageBounds.maxY) - Double(decoded.frame.maxY)) * scale),
+                width: CGFloat(Double(decoded.frame.width) * scale),
+                height: CGFloat(Double(decoded.frame.height) * scale)
+            )
+            context.draw(decoded.image, in: destination)
+        }
+
+        drawStrokes(
+            renderableStrokes,
+            in: context,
+            lineScale: scale
+        ) { point in
+            CGPoint(
+                x: CGFloat((Double(point.x) - Double(pageBounds.minX)) * scale),
+                y: CGFloat(Double(pixelHeight) - ((Double(point.y) - Double(pageBounds.minY)) * scale))
+            )
+        }
+
+        guard
+            let outputImage = context.makeImage(),
+            let png = NSBitmapImageRep(cgImage: outputImage).representation(using: .png, properties: [:])
+        else {
+            throw OpenNoteError.fileSystem("Could not encode the full-page annotated image.")
+        }
+        return RenderedImage(data: png, fileExtension: "png", includedDrawings: true)
+    }
+
     static func render(
         imageData: Data,
         resource: AttachmentResource,
@@ -55,10 +202,17 @@ enum ImageExportRenderer {
             )
         }
 
-        let pageFrame = CGRect(x: pageLeft, y: pageTop, width: displayWidth, height: displayHeight)
+        let pageFrame = CGRect(
+            x: CGFloat(pageLeft),
+            y: CGFloat(pageTop),
+            width: CGFloat(displayWidth),
+            height: CGFloat(displayHeight)
+        )
         let overlapping = strokes.filter { stroke in
             guard let bounds = stroke.bounds else { return false }
-            return bounds.insetBy(dx: -stroke.width, dy: -stroke.width).intersects(pageFrame)
+            return bounds
+                .insetBy(dx: -CGFloat(stroke.width), dy: -CGFloat(stroke.width))
+                .intersects(pageFrame)
         }
         guard !overlapping.isEmpty else {
             return RenderedImage(
@@ -81,29 +235,22 @@ enum ImageExportRenderer {
         }
 
         context.interpolationQuality = .high
-        context.draw(sourceImage, in: CGRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight))
-        context.setLineCap(.round)
-        context.setLineJoin(.round)
+        context.draw(
+            sourceImage,
+            in: CGRect(x: 0, y: 0, width: CGFloat(pixelWidth), height: CGFloat(pixelHeight))
+        )
 
         let scaleX = Double(pixelWidth) / displayWidth
         let scaleY = Double(pixelHeight) / displayHeight
-        for stroke in overlapping where !stroke.points.isEmpty {
-            let color = NSColor(hex: stroke.colorHex, opacity: stroke.opacity)
-            context.setStrokeColor(color.cgColor)
-            context.setLineWidth(max(0.5, stroke.width * ((scaleX + scaleY) / 2)))
-            context.beginPath()
-            for (index, point) in stroke.points.enumerated() {
-                let local = CGPoint(
-                    x: (point.x - pageLeft) * scaleX,
-                    y: Double(pixelHeight) - ((point.y - pageTop) * scaleY)
-                )
-                if index == 0 {
-                    context.move(to: local)
-                } else {
-                    context.addLine(to: local)
-                }
-            }
-            context.strokePath()
+        drawStrokes(
+            overlapping,
+            in: context,
+            lineScale: (scaleX + scaleY) / 2
+        ) { point in
+            CGPoint(
+                x: CGFloat((Double(point.x) - pageLeft) * scaleX),
+                y: CGFloat(Double(pixelHeight) - ((Double(point.y) - pageTop) * scaleY))
+            )
         }
 
         guard
@@ -113,6 +260,48 @@ enum ImageExportRenderer {
             throw OpenNoteError.fileSystem("Could not encode the annotated image.")
         }
         return RenderedImage(data: png, fileExtension: "png", includedDrawings: true)
+    }
+
+    private static func drawStrokes(
+        _ strokes: [InkStroke],
+        in context: CGContext,
+        lineScale: Double,
+        mapPoint: (CGPoint) -> CGPoint
+    ) {
+        context.setLineCap(.round)
+        context.setLineJoin(.round)
+
+        for stroke in strokes where !stroke.points.isEmpty {
+            let color = NSColor(hex: stroke.colorHex, opacity: stroke.opacity)
+            context.setStrokeColor(color.cgColor)
+            context.setLineWidth(CGFloat(max(0.5, stroke.width * lineScale)))
+            context.beginPath()
+            for (index, point) in stroke.points.enumerated() {
+                let local = mapPoint(point)
+                if index == 0 {
+                    context.move(to: local)
+                } else {
+                    context.addLine(to: local)
+                }
+            }
+            context.strokePath()
+        }
+    }
+
+    private static func boundedPageScale(
+        _ requestedScale: Double,
+        width: Double,
+        height: Double
+    ) -> Double {
+        let scale = max(0.01, requestedScale.isFinite ? requestedScale : 1)
+        let maxDimension = 16_384.0
+        let maxPixels = 50_000_000.0
+        let dimensionScale = min(
+            maxDimension / max(width, 1),
+            maxDimension / max(height, 1)
+        )
+        let pixelScale = sqrt(maxPixels / max(width * height, 1))
+        return min(scale, dimensionScale, pixelScale)
     }
 
     static func isSupportedImageData(_ data: Data) -> Bool {

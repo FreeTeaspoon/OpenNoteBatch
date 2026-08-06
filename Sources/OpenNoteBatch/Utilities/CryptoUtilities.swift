@@ -113,11 +113,7 @@ final class KeychainStore {
 
     func save<T: Encodable>(_ value: T, account: String) throws {
         let data = try JSONEncoder().encode(value)
-        if helperURL != nil {
-            _ = try runHelper(command: "save", account: account, input: data)
-        } else {
-            try saveDirect(data, account: account)
-        }
+        _ = try runHelper(command: "save", account: account, input: data)
     }
 
     func migrateLegacyAccess(accounts: [String]) {
@@ -147,29 +143,37 @@ final class KeychainStore {
     }
 
     func load<T: Decodable>(_ type: T.Type, account: String) throws -> T? {
-        let data = if helperURL != nil {
-            try runHelper(command: "read", account: account)
-        } else {
-            try loadDirectData(account: account)
-        }
+        let data = try runHelper(command: "read", account: account)
         guard let data else { return nil }
         return try JSONDecoder().decode(type, from: data)
     }
 
     func delete(account: String) {
-        if helperURL != nil {
-            _ = try? runHelper(command: "delete", account: account)
-        } else {
-            _ = try? deleteDirect(account: account)
-        }
+        _ = try? runHelper(command: "delete", account: account)
     }
 
     private var helperURL: URL? {
-        let url = Bundle.main.bundleURL
-            .appendingPathComponent("Contents", isDirectory: true)
-            .appendingPathComponent("Helpers", isDirectory: true)
-            .appendingPathComponent(helperName, isDirectory: false)
-        return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
+        var candidates = [
+            Bundle.main.bundleURL
+                .appendingPathComponent("Contents", isDirectory: true)
+                .appendingPathComponent("Helpers", isDirectory: true)
+                .appendingPathComponent(helperName, isDirectory: false),
+            URL(fileURLWithPath: "/Applications/OpenNoteBatch.app/Contents/Helpers/\(helperName)")
+        ]
+
+        if let executableURL = Bundle.main.executableURL {
+            let contentsURL = executableURL
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+            candidates.append(contentsURL
+                .appendingPathComponent("Helpers", isDirectory: true)
+                .appendingPathComponent(helperName, isDirectory: false))
+        }
+
+        var seen = Set<String>()
+        return candidates.first {
+            seen.insert($0.path).inserted && FileManager.default.isExecutableFile(atPath: $0.path)
+        }
     }
 
     private func baseQuery(account: String) -> [String: Any] {
