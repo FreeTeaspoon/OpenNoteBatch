@@ -11,6 +11,7 @@ BIN=".build/release/OpenNoteBatch"
 SIGNING_IDENTITY="${OPENNOTE_BATCH_SIGNING_IDENTITY:-OpenNote Batch Development}"
 HELPER_NAME="OpenNoteBatchKeychain"
 HELPER_SOURCE="Support/OpenNoteBatchKeychain.swift"
+ICON_DOCUMENT="Support/AppIcon.icon"
 HELPER_CACHE_DIR="${OPENNOTE_BATCH_HELPER_CACHE_DIR:-$HOME/Library/Application Support/OpenNoteBatch}"
 HELPER_CACHE="$HELPER_CACHE_DIR/$HELPER_NAME"
 
@@ -23,9 +24,19 @@ if ! security find-certificate -c "$SIGNING_IDENTITY" "$login_keychain" >/dev/nu
 fi
 
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/OpenNoteBatch"
 cp "Support/Info.plist" "$APP/Contents/Info.plist"
+xcrun actool "$ICON_DOCUMENT" \
+  --compile "$APP/Contents/Resources" \
+  --platform macosx \
+  --minimum-deployment-target 26.0 \
+  --app-icon AppIcon \
+  --output-partial-info-plist ".build/OpenNoteBatch-assetcatalog-info.plist" \
+  --output-format human-readable-text \
+  --warnings \
+  --notices
+ditto "$ICON_DOCUMENT" "$APP/Contents/Resources/AppIcon.icon"
 
 if [[ -x "$HELPER_CACHE" ]] && codesign --verify --strict "$HELPER_CACHE" >/dev/null 2>&1; then
   cp "$HELPER_CACHE" "$APP/Contents/Helpers/$HELPER_NAME"

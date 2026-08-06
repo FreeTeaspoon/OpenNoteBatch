@@ -46,6 +46,7 @@ final class AppViewModel: ObservableObject {
     private var pendingSectionSelections: [String: Bool] = [:]
     private var pendingSectionGroupSelections: [String: Bool] = [:]
     private var sectionGroupSelectionStates: [String: Bool] = [:]
+    private var didAttemptLaunchNotebookRefresh = false
 
     var selectedTool: ToolDefinition {
         ToolDefinition.all.first { $0.id == selectedToolID } ?? ToolDefinition.all[0]
@@ -119,6 +120,13 @@ final class AppViewModel: ObservableObject {
 
     func handleCallback(_ url: URL) {
         Task { await auth.handleCallback(url) }
+    }
+
+    func refreshNotebooksOnLaunchIfNeeded() {
+        guard !didAttemptLaunchNotebookRefresh else { return }
+        didAttemptLaunchNotebookRefresh = true
+        guard auth.account != nil else { return }
+        loadNotebookTree()
     }
 
     func loadNotebookTree() {
@@ -345,8 +353,9 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    func renameNotebook(_ notebook: NotebookNode) {
-        guard let newName = promptForRename(title: "Rename Notebook", currentName: notebook.displayName) else { return }
+    func renameNotebook(_ notebook: NotebookNode, newName: String) {
+        let newName = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newName.isEmpty, newName != notebook.displayName else { return }
         Task {
             await runBusy(title: "Rename Notebook") {
                 let repository = try await self.makeRepository()

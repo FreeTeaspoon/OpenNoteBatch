@@ -11,6 +11,9 @@ struct OpenNoteBatchApp: App {
                 .onOpenURL { url in
                     model.handleCallback(url)
                 }
+                .task {
+                    model.refreshNotebooksOnLaunchIfNeeded()
+                }
         }
         .windowStyle(.titleBar)
         .defaultSize(width: 1240, height: 760)

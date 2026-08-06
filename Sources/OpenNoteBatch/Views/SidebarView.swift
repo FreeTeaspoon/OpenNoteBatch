@@ -113,8 +113,15 @@ struct SidebarView: View {
 private struct NotebookTreeRow: View {
     @EnvironmentObject private var model: AppViewModel
     @State private var isExpanded = false
+    @State private var isRenaming = false
+    @State private var renameText = ""
+    @FocusState private var renameFieldFocused: Bool
 
     let notebook: NotebookNode
+
+    private var canRename: Bool {
+        !model.isBusy && model.auth.account != nil
+    }
 
     var body: some View {
         DisclosureGroup(isExpanded: $isExpanded) {
@@ -130,8 +137,40 @@ private struct NotebookTreeRow: View {
                 LoadingTreeRow(title: "Loading sections")
             }
         } label: {
-            HStack {
-                TreeItemLabel(title: notebook.displayName, systemImage: "book.closed")
+            HStack(spacing: 8) {
+                if isRenaming {
+                    Image(systemName: "book.closed")
+                        .symbolRenderingMode(.hierarchical)
+                        .frame(width: 18, alignment: .center)
+
+                    TextField("Notebook name", text: $renameText)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($renameFieldFocused)
+                        .onSubmit {
+                            commitRename()
+                        }
+                        .onExitCommand {
+                            cancelRename()
+                        }
+
+                    Button {
+                        commitRename()
+                    } label: {
+                        Image(systemName: "checkmark")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Save notebook name")
+
+                    Button {
+                        cancelRename()
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Cancel notebook rename")
+                } else {
+                    TreeItemLabel(title: notebook.displayName, systemImage: "book.closed")
+                }
                 Spacer()
                 if model.isLoadingNotebook(notebook) {
                     ProgressView()
@@ -143,11 +182,11 @@ private struct NotebookTreeRow: View {
         .tag("notebook:\(notebook.id)")
         .contextMenu {
             Button {
-                model.renameNotebook(notebook)
+                beginRename()
             } label: {
                 Label("Rename Notebook", systemImage: "pencil")
             }
-            .disabled(model.isBusy || model.auth.account == nil)
+            .disabled(!canRename)
         }
         .onChange(of: isExpanded) { _, expanded in
             if expanded {
@@ -155,6 +194,33 @@ private struct NotebookTreeRow: View {
                 model.loadNotebookContentsIfNeeded(notebook)
             }
         }
+    }
+
+    private func beginRename() {
+        guard canRename else { return }
+        renameText = notebook.displayName
+        isRenaming = true
+        Task { @MainActor in
+            renameFieldFocused = true
+        }
+    }
+
+    private func commitRename() {
+        let newName = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newName.isEmpty, newName != notebook.displayName else {
+            cancelRename()
+            return
+        }
+
+        isRenaming = false
+        renameFieldFocused = false
+        model.renameNotebook(notebook, newName: newName)
+    }
+
+    private func cancelRename() {
+        isRenaming = false
+        renameFieldFocused = false
+        renameText = ""
     }
 }
 
