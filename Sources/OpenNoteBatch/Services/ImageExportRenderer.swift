@@ -1,6 +1,6 @@
 import AppKit
 import Foundation
-import PDFKit
+import ImageIO
 
 enum InkMLParser {
     static func strokes(from documents: [String]) -> [InkStroke] {
@@ -27,12 +27,14 @@ enum ImageExportRenderer {
         resource: AttachmentResource,
         strokes: [InkStroke]
     ) throws -> RenderedImage {
+        guard let sourceImage = cgImage(from: imageData) else {
+            throw OpenNoteError.fileSystem("The downloaded resource is not a supported image format.")
+        }
+
         guard
             !strokes.isEmpty,
             let pageTop = resource.pageTop,
-            let pageLeft = resource.pageLeft,
-            let image = NSImage(data: imageData),
-            let sourceImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+            let pageLeft = resource.pageLeft
         else {
             return RenderedImage(
                 data: imageData,
@@ -113,17 +115,50 @@ enum ImageExportRenderer {
         return RenderedImage(data: png, fileExtension: "png", includedDrawings: true)
     }
 
+    static func isSupportedImageData(_ data: Data) -> Bool {
+        cgImage(from: data) != nil
+    }
+
     static func writePDF(images: [Data], to url: URL) throws {
-        let document = PDFDocument()
-        for (index, data) in images.enumerated() {
-            guard let image = NSImage(data: data), let page = PDFPage(image: image) else {
-                throw OpenNoteError.fileSystem("Could not add image \(index + 1) to the PDF.")
-            }
-            document.insert(page, at: document.pageCount)
+        guard !images.isEmpty else {
+            throw OpenNoteError.fileSystem("Could not create a PDF without any images.")
         }
-        guard document.write(to: url) else {
+
+        let sourceImages = try images.enumerated().map { index, data in
+            guard let image = cgImage(from: data) else {
+                throw OpenNoteError.fileSystem("Could not decode image \(index + 1) for the PDF.")
+            }
+            return image
+        }
+
+        guard let context = CGContext(url as CFURL, mediaBox: nil, nil) else {
             throw OpenNoteError.fileSystem("Could not write \(url.lastPathComponent).")
         }
+        for image in sourceImages {
+            var mediaBox = CGRect(
+                x: 0,
+                y: 0,
+                width: CGFloat(image.width),
+                height: CGFloat(image.height)
+            )
+            context.beginPage(mediaBox: &mediaBox)
+            context.interpolationQuality = CGInterpolationQuality.high
+            context.draw(image, in: mediaBox)
+            context.endPage()
+        }
+        context.closePDF()
+    }
+
+    private static func cgImage(from data: Data) -> CGImage? {
+        if
+            let source = CGImageSourceCreateWithData(data as CFData, nil),
+            let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
+        {
+            return image
+        }
+
+        guard let image = NSImage(data: data) else { return nil }
+        return image.cgImage(forProposedRect: nil, context: nil, hints: nil)
     }
 }
 

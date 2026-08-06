@@ -104,13 +104,9 @@ struct OneNoteRepository {
         )
     }
 
-    func attachments(on page: PageNode, includeImages: Bool = false) async throws -> [AttachmentResource] {
+    func attachments(on page: PageNode) async throws -> [AttachmentResource] {
         let html = try await pageContent(pageID: page.id)
-        var resources = OneNoteHTML.attachments(from: html, page: page)
-        if includeImages {
-            resources.append(contentsOf: OneNoteHTML.images(from: html, page: page))
-        }
-        return resources
+        return OneNoteHTML.attachments(from: html, page: page)
     }
 
     func tags(on page: PageNode) async throws -> [BatchResult] {

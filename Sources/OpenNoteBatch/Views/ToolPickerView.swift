@@ -17,16 +17,15 @@ struct ToolPickerView: View {
     var body: some View {
         List(selection: selectedTool) {
             ForEach(WorkspaceTab.allCases) { tab in
-                let tools = filteredTools(for: tab)
-                if !tools.isEmpty {
+                ForEach(groupedTools(for: tab)) { group in
                     Section {
-                        ForEach(tools) { tool in
+                        ForEach(group.tools) { tool in
                             ToolRow(tool: tool)
                                 .tag(tool.id)
                                 .listRowInsets(EdgeInsets(top: 5, leading: 12, bottom: 5, trailing: 12))
                         }
                     } header: {
-                        Text(tab.rawValue)
+                        Text("\(tab.rawValue) · \(group.title)")
                             .padding(.top, 6)
                             .padding(.bottom, 4)
                             .textCase(nil)
@@ -57,6 +56,26 @@ struct ToolPickerView: View {
                 || tool.subtitle.localizedCaseInsensitiveContains(query)
         }
     }
+
+    private func groupedTools(for tab: WorkspaceTab) -> [ToolSection] {
+        var sections: [ToolSection] = []
+
+        for tool in filteredTools(for: tab) {
+            if let index = sections.firstIndex(where: { $0.id == tool.group }) {
+                sections[index].tools.append(tool)
+            } else {
+                sections.append(ToolSection(id: tool.group, title: tool.group, tools: [tool]))
+            }
+        }
+
+        return sections
+    }
+}
+
+private struct ToolSection: Identifiable {
+    let id: String
+    let title: String
+    var tools: [ToolDefinition]
 }
 
 private struct ToolRow: View {

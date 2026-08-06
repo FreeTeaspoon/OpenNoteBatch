@@ -7,10 +7,9 @@ struct ExportService {
     let client: GraphClient
 
     @MainActor
-    func saveAttachments(
+    private func saveAttachments(
         pages: [PageNode],
         outputDirectory: URL,
-        includeImages: Bool,
         progress: BatchProgressUpdate? = nil
     ) async throws -> [BatchResult] {
         try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
@@ -25,7 +24,7 @@ struct ExportService {
             scannedPages += 1
             let resources: [AttachmentResource]
             do {
-                resources = try await repository.attachments(on: page, includeImages: includeImages)
+                resources = try await repository.attachments(on: page)
             } catch {
                 results.append(.init(
                     name: page.title,
@@ -48,7 +47,7 @@ struct ExportService {
                     do {
                         data = try await download(resource)
                     } catch {
-                        let refreshed = try await repository.attachments(on: page, includeImages: includeImages)
+                        let refreshed = try await repository.attachments(on: page)
                         guard let replacement = refreshed.first(where: {
                             $0.kind == resource.kind && $0.fileName == resource.fileName
                         }) else { throw error }
@@ -69,6 +68,47 @@ struct ExportService {
                 }
             }
         }
+        return results
+    }
+
+    @MainActor
+    func exportAttachmentsAndImages(
+        pages: [PageNode],
+        outputDirectory: URL,
+        includeAttachments: Bool,
+        includeImages: Bool,
+        includeDrawings: Bool,
+        createPDF: Bool,
+        progress: BatchProgressUpdate? = nil
+    ) async throws -> [BatchResult] {
+        guard includeAttachments || includeImages else {
+            throw OpenNoteError.selectionRequired("Choose file attachments, embedded images, or both to export.")
+        }
+
+        try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+        let phaseCount = (includeAttachments ? 1 : 0) + (includeImages ? 1 : 0)
+        var phase = 0
+        var results: [BatchResult] = []
+
+        if includeAttachments {
+            results.append(contentsOf: try await saveAttachments(
+                pages: pages,
+                outputDirectory: outputDirectory,
+                progress: phaseProgress(phase: phase, phaseCount: phaseCount, progress: progress)
+            ))
+            phase += 1
+        }
+
+        if includeImages {
+            results.append(contentsOf: try await exportImages(
+                pages: pages,
+                outputDirectory: outputDirectory,
+                includeDrawings: includeDrawings,
+                createPDF: createPDF,
+                progress: phaseProgress(phase: phase, phaseCount: phaseCount, progress: progress)
+            ))
+        }
+
         return results
     }
 
@@ -116,7 +156,7 @@ struct ExportService {
     }
 
     @MainActor
-    func exportImages(
+    private func exportImages(
         pages: [PageNode],
         outputDirectory: URL,
         includeDrawings: Bool,
@@ -166,14 +206,14 @@ struct ExportService {
                 let currentResource: AttachmentResource
                 do {
                     do {
-                        downloaded = try await download(resource)
+                        downloaded = try await downloadRenderableImage(resource)
                         currentResource = resource
                     } catch {
                         let refreshedContent = try await repository.pageContent(pageID: page.id, includeInkML: false)
                         let refreshedImages = OneNoteHTML.images(from: refreshedContent.html, page: page)
                         guard refreshedImages.indices.contains(imageIndex) else { throw error }
                         currentResource = refreshedImages[imageIndex]
-                        downloaded = try await download(currentResource)
+                        downloaded = try await downloadRenderableImage(currentResource)
                     }
                 } catch {
                     completed += 1
@@ -259,6 +299,44 @@ struct ExportService {
         } catch {
             guard let alternate = resource.alternateResourceURL else { throw error }
             return try await client.download(alternate)
+        }
+    }
+
+    @MainActor
+    private func downloadRenderableImage(_ resource: AttachmentResource) async throws -> Data {
+        let data = try await download(resource)
+        guard !ImageExportRenderer.isSupportedImageData(data) else { return data }
+
+        guard let alternate = resource.alternateResourceURL else {
+            throw OpenNoteError.fileSystem(
+                "OneNote returned an unsupported image format for \(resource.fileName)."
+            )
+        }
+        let alternateData = try await client.download(alternate)
+        guard ImageExportRenderer.isSupportedImageData(alternateData) else {
+            throw OpenNoteError.fileSystem(
+                "OneNote returned unsupported image data for \(resource.fileName)."
+            )
+        }
+        return alternateData
+    }
+
+    private func phaseProgress(
+        phase: Int,
+        phaseCount: Int,
+        progress: BatchProgressUpdate?
+    ) -> BatchProgressUpdate? {
+        guard let progress else { return nil }
+        return { completed, total, message in
+            let phaseFraction = total > 0
+                ? min(max(Double(completed) / Double(total), 0), 1)
+                : 0
+            let scaledCompleted = Double(phase) + phaseFraction
+            await progress(
+                Int((scaledCompleted * 100).rounded(.down)),
+                phaseCount * 100,
+                message
+            )
         }
     }
 

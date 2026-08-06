@@ -8,8 +8,8 @@ final class AppViewModel: ObservableObject {
     @Published var settings = AppSettings() {
         didSet { saveSettings() }
     }
-    @Published var selectedTab: WorkspaceTab = .home
-    @Published var selectedToolID: ToolID = .attachmentList
+    @Published var selectedTab: WorkspaceTab = .export
+    @Published var selectedToolID: ToolID = .exportAttachmentsAndImages
     @Published var selectedNotebookID: String?
     @Published var selectedTreeItemID: String?
     @Published var toolSearchText = ""
@@ -21,9 +21,10 @@ final class AppViewModel: ObservableObject {
     @Published var outputDirectory: URL?
     @Published var importFiles: [URL] = []
     @Published var importRoot: URL?
-    @Published var includeImages = false
+    @Published var includeAttachments = true
+    @Published var includeImages = true
     @Published var includeDrawings = true
-    @Published var createImagePDF = false
+    @Published var createImagePDF = true
     @Published var matchCase = false
     @Published var titleOnlySearch = true
     @Published var searchText = ""
@@ -78,7 +79,7 @@ final class AppViewModel: ObservableObject {
 
     func select(tab: WorkspaceTab) {
         selectedTab = tab
-        selectedToolID = ToolDefinition.all.first { $0.tab == tab }?.id ?? .attachmentList
+        selectedToolID = ToolDefinition.all.first { $0.tab == tab }?.id ?? .exportAttachmentsAndImages
         results = []
     }
 
@@ -438,8 +439,6 @@ final class AppViewModel: ObservableObject {
                 let progress = self.progressReporter(title: self.selectedTool.title)
 
                 switch self.selectedToolID {
-                case .attachmentList:
-                    return try await self.runAttachmentList(exportService: exportService, progress: progress)
                 case .tagList:
                     return try await self.runTagList(repository: repository, progress: progress)
                 case .replacePageTitle:
@@ -462,10 +461,12 @@ final class AppViewModel: ObservableObject {
                         outputDirectory: self.resolvedOutputDirectory(),
                         progress: progress
                     )
-                case .exportImages:
-                    return try await exportService.exportImages(
+                case .exportAttachmentsAndImages:
+                    return try await exportService.exportAttachmentsAndImages(
                         pages: self.requiredPages(),
                         outputDirectory: self.resolvedOutputDirectory(),
+                        includeAttachments: self.includeAttachments,
+                        includeImages: self.includeImages,
                         includeDrawings: self.includeDrawings,
                         createPDF: self.createImagePDF,
                         progress: progress
@@ -600,31 +601,6 @@ final class AppViewModel: ObservableObject {
         if let outputDirectory { return outputDirectory }
         let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
         return downloads.appendingPathComponent("OpenNote Batch")
-    }
-
-    private func runAttachmentList(exportService: ExportService, progress: BatchProgressUpdate? = nil) async throws -> [BatchResult] {
-        let pages = try requiredPages()
-        if outputDirectory == nil {
-            var listing: [BatchResult] = []
-            let repository = exportService.repository
-            for (index, page) in pages.enumerated() {
-                let resources = try await repository.attachments(on: page, includeImages: includeImages)
-                listing.append(contentsOf: resources.map {
-                    BatchResult(name: $0.fileName, path: page.title, status: .ready, message: "Ready to save.")
-                })
-                if resources.isEmpty {
-                    listing.append(.init(name: page.title, path: "", status: .warning, message: "No attachments found."))
-                }
-                await progress?(index + 1, pages.count, "Scanned \(page.title).")
-            }
-            return listing
-        }
-        return try await exportService.saveAttachments(
-            pages: pages,
-            outputDirectory: resolvedOutputDirectory(),
-            includeImages: includeImages,
-            progress: progress
-        )
     }
 
     private func runTagList(repository: OneNoteRepository, progress: BatchProgressUpdate? = nil) async throws -> [BatchResult] {

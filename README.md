@@ -14,7 +14,7 @@ project does not reuse any vendor client ID, private assets, or app code.
 - Microsoft account sign-in choices for personal, global work/school, China
   work/school, and OneNote personal account modes.
 - Notebook and section browser.
-- Attachment list scan and bulk save.
+- Combined attachment and embedded-image export, with optional annotations and a PDF for each page.
 - Page search across title or content.
 - Tag list scan from OneNote page HTML.
 - Export selected pages to text, HTML, or backup folders.
@@ -72,8 +72,9 @@ Paste the client ID into OpenNote Batch's Settings sheet before signing in.
 5. Check pages or sections in the sidebar.
 6. Pick a Home, Export, or Import tool and run it.
 
-For Attachment List, leaving the save folder blank lists attachments only.
-Choosing a save folder downloads matching attachments.
+The combined attachment and image export writes to `Downloads/OpenNote Batch` by
+default. Its options independently control file attachments, embedded images,
+annotations, and a PDF for each page.
 
 Features that Microsoft Graph does not expose safely, such as exact native
 section-size reporting or lost-section recovery, remain visible but return

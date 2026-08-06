@@ -183,6 +183,26 @@ struct OneNoteContentParserTests {
         try ImageExportRenderer.writePDF(images: [rendered.data], to: pdfURL)
         #expect((try Data(contentsOf: pdfURL)).starts(with: Data("%PDF".utf8)))
     }
+
+    @Test @MainActor func detectsUnsupportedFullResolutionImageData() throws {
+        let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 2,
+            pixelsHigh: 2,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        )!
+        let fallback = bitmap.representation(using: .png, properties: [:])!
+        let metafileHeader = Data([0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+
+        #expect(!ImageExportRenderer.isSupportedImageData(metafileHeader))
+        #expect(ImageExportRenderer.isSupportedImageData(fallback))
+    }
 }
 
 @Suite("OneNote ordering")

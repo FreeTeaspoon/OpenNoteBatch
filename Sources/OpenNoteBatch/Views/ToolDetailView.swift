@@ -60,9 +60,6 @@ struct ToolDetailView: View {
     @ViewBuilder
     private var optionRows: some View {
         switch model.selectedToolID {
-        case .attachmentList:
-            Toggle("Include embedded images", isOn: $model.includeImages)
-            outputChooser(label: "Save folder")
         case .tagList:
             Text("Scans selected pages for OneNote data-tag markers.")
                 .foregroundStyle(.secondary)
@@ -76,11 +73,20 @@ struct ToolDetailView: View {
             Toggle("Search page titles only", isOn: $model.titleOnlySearch)
         case .copySections:
             targetSectionField
+        case .exportAttachmentsAndImages:
+            Toggle("Include file attachments", isOn: $model.includeAttachments)
+            Toggle("Include embedded images", isOn: $model.includeImages)
+            Toggle("Include annotations on images", isOn: $model.includeDrawings)
+                .disabled(!model.includeImages)
+            Toggle("Create a PDF for each OneNote page", isOn: $model.createImagePDF)
+                .disabled(!model.includeImages)
+
+            Text("Attachments are saved in an attachments folder. Images and PDFs are saved alongside each page; PDFs use the rendered images, so enabled annotations are included.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            outputChooser(label: "Destination")
         case .exportText, .exportHTML, .backup:
-            outputChooser(label: "Store folder")
-        case .exportImages:
-            Toggle("Include drawings and annotations", isOn: $model.includeDrawings)
-            Toggle("Also create a PDF for each OneNote page", isOn: $model.createImagePDF)
             outputChooser(label: "Store folder")
         case .importText:
             importFileChooser(label: "Text files", extensions: ["txt"])
