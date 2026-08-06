@@ -19,7 +19,7 @@ struct ExportService {
         var discoveredResources = 0
         var downloadedResources = 0
         for page in pages {
-            let pageFolder = outputDirectory.appendingPathComponent(Filename.safe(page.title))
+            let pageFolder = ExportPath.pageDirectory(for: page, outputDirectory: outputDirectory)
             let attachmentsFolder = pageFolder.appendingPathComponent("attachments")
             try FileManager.default.createDirectory(at: attachmentsFolder, withIntermediateDirectories: true)
             scannedPages += 1
@@ -80,7 +80,9 @@ struct ExportService {
             do {
                 let html = try await repository.pageContent(pageID: page.id)
                 let text = OneNoteHTML.plainText(from: html)
-                let target = Filename.unique(in: outputDirectory, name: "\(page.title).txt")
+                let pageDirectory = ExportPath.pageDirectory(for: page, outputDirectory: outputDirectory)
+                try FileManager.default.createDirectory(at: pageDirectory, withIntermediateDirectories: true)
+                let target = Filename.unique(in: pageDirectory, name: "\(page.title).txt")
                 try text.write(to: target, atomically: true, encoding: .utf8)
                 results.append(.init(name: page.title, path: target.path, status: .success, message: "Exported plain text."))
                 await progress?(index + 1, pages.count, "Exported \(page.title).")
@@ -99,7 +101,9 @@ struct ExportService {
         for (index, page) in pages.enumerated() {
             do {
                 let html = try await repository.pageContent(pageID: page.id)
-                let target = Filename.unique(in: outputDirectory, name: "\(page.title).html")
+                let pageDirectory = ExportPath.pageDirectory(for: page, outputDirectory: outputDirectory)
+                try FileManager.default.createDirectory(at: pageDirectory, withIntermediateDirectories: true)
+                let target = Filename.unique(in: pageDirectory, name: "\(page.title).html")
                 try html.write(to: target, atomically: true, encoding: .utf8)
                 results.append(.init(name: page.title, path: target.path, status: .success, message: "Exported HTML."))
                 await progress?(index + 1, pages.count, "Exported \(page.title).")
@@ -153,7 +157,7 @@ struct ExportService {
                 continue
             }
 
-            let pageDirectory = outputDirectory.appendingPathComponent(Filename.safe(page.title))
+            let pageDirectory = ExportPath.pageDirectory(for: page, outputDirectory: outputDirectory)
             try FileManager.default.createDirectory(at: pageDirectory, withIntermediateDirectories: true)
             var renderedImages: [Data] = []
 
@@ -268,9 +272,7 @@ struct ExportService {
         var downloadedAttachments = 0
 
         for page in pages {
-            let pageDirectory = outputDirectory
-                .appendingPathComponent(Filename.safe(page.sectionName ?? "Pages"))
-                .appendingPathComponent(Filename.safe(page.title))
+            let pageDirectory = ExportPath.pageDirectory(for: page, outputDirectory: outputDirectory)
             let attachmentDirectory = pageDirectory.appendingPathComponent("attachments")
             try FileManager.default.createDirectory(at: attachmentDirectory, withIntermediateDirectories: true)
 
