@@ -18,7 +18,11 @@ final class AppViewModel: ObservableObject {
     @Published var selectedPageIDs: Set<String> = []
     @Published var selectedSectionID: String?
     @Published var targetSectionID = ""
-    @Published var outputDirectory: URL?
+    @Published var outputDirectory: URL? {
+        didSet {
+            settings.outputDirectoryPath = outputDirectory?.path
+        }
+    }
     @Published var importFiles: [URL] = []
     @Published var importRoot: URL?
     @Published var includeAttachments = true
@@ -75,6 +79,9 @@ final class AppViewModel: ObservableObject {
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
         loadSettings()
+        if let path = settings.outputDirectoryPath, !path.isEmpty {
+            outputDirectory = URL(fileURLWithPath: path)
+        }
     }
 
     func select(tab: WorkspaceTab) {

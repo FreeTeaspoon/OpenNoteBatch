@@ -95,6 +95,7 @@ struct AppSettings: Codable, Equatable {
     var redirectURI: String = "msauth.com.openbatch.opennotebatch://auth"
     var tenantOverride: String = ""
     var permissionPreset: PermissionPreset = .fullBatch
+    var outputDirectoryPath: String? = nil
 
     func tenant(for accountKind: AccountKind) -> String {
         tenantOverride.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

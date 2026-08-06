@@ -99,16 +99,28 @@ Create a local `.app` bundle:
 open .build/OpenNoteBatch.app
 ```
 
-The package script uses a stable local signing identity so macOS Keychain
-approval survives rebuilds. Set it up once on a development Mac:
+The package script uses a stable local signing identity plus a separately
+cached Keychain helper. The helper's executable hash does not change when the
+main app is rebuilt, so Keychain approval survives normal rebuilds. Set it up
+once on a development Mac:
 
 ```bash
 ./scripts/setup-local-signing.sh
 ./scripts/package-app.sh
 ```
 
-When switching an existing installation from ad-hoc signing, macOS may ask
-once more for Keychain access; choose **Always Allow** for the new signer.
+When switching an existing installation from ad-hoc signing, the first launch
+migrates the two existing Microsoft credentials to the stable helper. macOS
+may ask once for each existing credential; choose **Always Allow**. Later
+launches, refreshes, and rebuilds should not show those dialogs again. Keep the
+cached helper at:
+
+```text
+~/Library/Application Support/OpenNoteBatch/OpenNoteBatchKeychain
+```
+
+Deleting that helper causes Keychain to see a new caller and requires another
+one-time approval/migration.
 
 For an Apple-signed build, set `OPENNOTE_BATCH_SIGNING_IDENTITY` to an
 installed Apple Development or Developer ID Application identity instead.

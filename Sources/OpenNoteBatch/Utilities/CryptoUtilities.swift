@@ -108,15 +108,85 @@ struct ExportFileNamer {
 
 final class KeychainStore {
     private let service = "com.openbatch.opennotebatch"
+    private let helperMigrationKey = "keychain-helper-migration-v1"
+    private let helperName = "OpenNoteBatchKeychain"
 
     func save<T: Encodable>(_ value: T, account: String) throws {
         let data = try JSONEncoder().encode(value)
-        let query: [String: Any] = [
+        if helperURL != nil {
+            _ = try runHelper(command: "save", account: account, input: data)
+        } else {
+            try saveDirect(data, account: account)
+        }
+    }
+
+    func migrateLegacyAccess(accounts: [String]) {
+        guard !UserDefaults.standard.bool(forKey: helperMigrationKey), helperURL != nil else { return }
+
+        var migrationSucceeded = true
+        for account in accounts {
+            do {
+                guard let data = try loadDirectData(account: account) else { continue }
+                try deleteDirect(account: account)
+                do {
+                    _ = try runHelper(command: "save", account: account, input: data)
+                } catch {
+                    // Do not leave an existing login without a recoverable copy if
+                    // the first helper-backed write fails.
+                    try? saveDirect(data, account: account)
+                    throw error
+                }
+            } catch {
+                migrationSucceeded = false
+            }
+        }
+
+        if migrationSucceeded {
+            UserDefaults.standard.set(true, forKey: helperMigrationKey)
+        }
+    }
+
+    func load<T: Decodable>(_ type: T.Type, account: String) throws -> T? {
+        let data = if helperURL != nil {
+            try runHelper(command: "read", account: account)
+        } else {
+            try loadDirectData(account: account)
+        }
+        guard let data else { return nil }
+        return try JSONDecoder().decode(type, from: data)
+    }
+
+    func delete(account: String) {
+        if helperURL != nil {
+            _ = try? runHelper(command: "delete", account: account)
+        } else {
+            _ = try? deleteDirect(account: account)
+        }
+    }
+
+    private var helperURL: URL? {
+        let url = Bundle.main.bundleURL
+            .appendingPathComponent("Contents", isDirectory: true)
+            .appendingPathComponent("Helpers", isDirectory: true)
+            .appendingPathComponent(helperName, isDirectory: false)
+        return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
+    }
+
+    private func baseQuery(account: String) -> [String: Any] {
+        [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account
         ]
-        SecItemDelete(query as CFDictionary)
+    }
+
+    private func saveDirect(_ data: Data, account: String) throws {
+        let query = baseQuery(account: account)
+        let deleteStatus = SecItemDelete(query as CFDictionary)
+        guard deleteStatus == errSecSuccess || deleteStatus == errSecItemNotFound else {
+            throw OpenNoteError.fileSystem("Keychain delete failed with status \(deleteStatus).")
+        }
+
         var attributes = query
         attributes[kSecValueData as String] = data
         attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
@@ -126,29 +196,70 @@ final class KeychainStore {
         }
     }
 
-    func load<T: Decodable>(_ type: T.Type, account: String) throws -> T? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
+    private func loadDirectData(account: String) throws -> Data? {
+        var query = baseQuery(account: account)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = item as? Data else {
             throw OpenNoteError.fileSystem("Keychain load failed with status \(status).")
         }
-        return try JSONDecoder().decode(type, from: data)
+        return data
     }
 
-    func delete(account: String) {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-        SecItemDelete(query as CFDictionary)
+    private func deleteDirect(account: String) throws {
+        let status = SecItemDelete(baseQuery(account: account) as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw OpenNoteError.fileSystem("Keychain delete failed with status \(status).")
+        }
+    }
+
+    private func runHelper(command: String, account: String, input: Data? = nil) throws -> Data? {
+        guard let helperURL else {
+            throw OpenNoteError.fileSystem("The OpenNoteBatch Keychain helper is missing.")
+        }
+
+        let process = Process()
+        process.executableURL = helperURL
+        process.arguments = [command, service, account]
+
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+
+        if let input {
+            let inputPipe = Pipe()
+            process.standardInput = inputPipe
+            try process.run()
+            inputPipe.fileHandleForWriting.write(Data(input.base64EncodedString().utf8))
+            inputPipe.fileHandleForWriting.closeFile()
+        } else {
+            try process.run()
+        }
+        process.waitUntilExit()
+
+        let output = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        guard process.terminationStatus == 0 else {
+            let message = String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            throw OpenNoteError.fileSystem(message?.isEmpty == false ? message! : "Keychain helper failed.")
+        }
+
+        let response = String(data: output, encoding: .utf8) ?? ""
+        if response == "NOT_FOUND\n" || response == "NOT_FOUND" {
+            return nil
+        }
+        guard response.hasPrefix("OK\n") else {
+            throw OpenNoteError.fileSystem("Keychain helper returned an invalid response.")
+        }
+        let encoded = String(response.dropFirst(3)).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !encoded.isEmpty else { return Data() }
+        guard let data = Data(base64Encoded: encoded) else {
+            throw OpenNoteError.fileSystem("Keychain helper returned invalid data.")
+        }
+        return data
     }
 }

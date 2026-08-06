@@ -22,6 +22,7 @@ final class AuthService: ObservableObject {
     }
 
     init() {
+        keychain.migrateLegacyAccess(accounts: [tokenAccountKey, graphAccountKey])
         restoreAccount()
     }
 

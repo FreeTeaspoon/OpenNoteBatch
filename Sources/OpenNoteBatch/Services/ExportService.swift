@@ -7,72 +7,6 @@ struct ExportService {
     let client: GraphClient
 
     @MainActor
-    private func saveAttachments(
-        pages: [PageNode],
-        outputDirectory: URL,
-        progress: BatchProgressUpdate? = nil
-    ) async throws -> [BatchResult] {
-        try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
-        var results: [BatchResult] = []
-        var scannedPages = 0
-        var discoveredResources = 0
-        var downloadedResources = 0
-        var fileNamer = ExportFileNamer()
-        for page in pages {
-            let pageFolder = ExportPath.pageDirectory(for: page, outputDirectory: outputDirectory)
-            let attachmentsFolder = pageFolder.appendingPathComponent("attachments")
-            try FileManager.default.createDirectory(at: attachmentsFolder, withIntermediateDirectories: true)
-            scannedPages += 1
-            let resources: [AttachmentResource]
-            do {
-                resources = try await repository.attachments(on: page)
-            } catch {
-                results.append(.init(
-                    name: page.title,
-                    path: pageFolder.path,
-                    status: .failed,
-                    message: "Page resources could not be refreshed: \(error.localizedDescription)"
-                ))
-                await progress?(scannedPages + downloadedResources, pages.count + discoveredResources, "Skipped unavailable \(page.title).")
-                continue
-            }
-            discoveredResources += resources.count
-            if resources.isEmpty {
-                results.append(.init(name: page.title, path: pageFolder.path, status: .warning, message: "No attachments found."))
-                await progress?(scannedPages + downloadedResources, pages.count + discoveredResources, "Scanned \(page.title).")
-            }
-            for resource in resources {
-                downloadedResources += 1
-                do {
-                    let data: Data
-                    do {
-                        data = try await download(resource)
-                    } catch {
-                        let refreshed = try await repository.attachments(on: page)
-                        guard let replacement = refreshed.first(where: {
-                            $0.kind == resource.kind && $0.fileName == resource.fileName
-                        }) else { throw error }
-                        data = try await download(replacement)
-                    }
-                    let target = fileNamer.next(in: attachmentsFolder, name: resource.fileName)
-                    try data.write(to: target, options: .atomic)
-                    results.append(.init(name: resource.fileName, path: target.path, status: .success, message: "Saved from \(page.title)."))
-                    await progress?(scannedPages + downloadedResources, pages.count + discoveredResources, "Downloaded \(resource.fileName).")
-                } catch {
-                    results.append(.init(
-                        name: resource.fileName,
-                        path: page.title,
-                        status: .failed,
-                        message: "Resource could not be refreshed: \(error.localizedDescription)"
-                    ))
-                    await progress?(scannedPages + downloadedResources, pages.count + discoveredResources, "Skipped unavailable \(resource.fileName).")
-                }
-            }
-        }
-        return results
-    }
-
-    @MainActor
     func exportAttachmentsAndImages(
         pages: [PageNode],
         outputDirectory: URL,
@@ -87,30 +21,236 @@ struct ExportService {
         }
 
         try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
-        let phaseCount = (includeAttachments ? 1 : 0) + (includeImages ? 1 : 0)
-        var phase = 0
         var results: [BatchResult] = []
+        var completed = 0
+        var total = max(pages.count, 1)
+        var fileNamer = ExportFileNamer()
 
-        if includeAttachments {
-            results.append(contentsOf: try await saveAttachments(
-                pages: pages,
-                outputDirectory: outputDirectory,
-                progress: phaseProgress(phase: phase, phaseCount: phaseCount, progress: progress)
-            ))
-            phase += 1
-        }
+        for page in pages {
+            let pageDirectory = ExportPath.pageDirectory(for: page, outputDirectory: outputDirectory)
+            let attachmentsDirectory = pageDirectory.appendingPathComponent("attachments")
 
-        if includeImages {
-            results.append(contentsOf: try await exportImages(
-                pages: pages,
-                outputDirectory: outputDirectory,
-                includeDrawings: includeDrawings,
-                createPDF: createPDF,
-                progress: phaseProgress(phase: phase, phaseCount: phaseCount, progress: progress)
-            ))
+            let fetchedContent: (content: OneNotePageContent, drawingFetchWarning: String?)
+            do {
+                fetchedContent = try await fetchPageContent(
+                    for: page,
+                    includeDrawings: includeImages && includeDrawings
+                )
+            } catch {
+                if includeAttachments {
+                    results.append(.init(
+                        name: page.title,
+                        path: pageDirectory.path,
+                        status: .failed,
+                        message: "Page resources could not be refreshed: \(error.localizedDescription)"
+                    ))
+                }
+                if includeImages {
+                    results.append(.init(
+                        name: page.title,
+                        path: pageDirectory.path,
+                        status: .failed,
+                        message: "Page images could not be refreshed: \(error.localizedDescription)"
+                    ))
+                }
+                completed += 1
+                await progress?(completed, total, "Skipped unavailable \(page.title).")
+                continue
+            }
+
+            let attachments = includeAttachments
+                ? OneNoteHTML.attachments(from: fetchedContent.content.html, page: page)
+                : []
+            let images = includeImages
+                ? OneNoteHTML.images(from: fetchedContent.content.html, page: page)
+                : []
+            let strokes = includeImages && includeDrawings
+                ? InkMLParser.strokes(from: fetchedContent.content.inkML)
+                : []
+            total += attachments.count
+                + images.count
+                + (includeImages && createPDF && !images.isEmpty ? 1 : 0)
+            completed += 1
+            var discovered: [String] = []
+            if includeAttachments {
+                discovered.append("\(attachments.count) attachment(s)")
+            }
+            if includeImages {
+                discovered.append("\(images.count) image(s)")
+            }
+            await progress?(completed, total, "Found \(discovered.joined(separator: " and ")) on \(page.title).")
+
+            if includeAttachments {
+                if attachments.isEmpty {
+                    results.append(.init(
+                        name: page.title,
+                        path: pageDirectory.path,
+                        status: .warning,
+                        message: "No attachments found."
+                    ))
+                }
+
+                for resource in attachments {
+                    do {
+                        let data: Data
+                        do {
+                            data = try await download(resource)
+                        } catch {
+                            let refreshed = try await repository.attachments(on: page)
+                            guard let replacement = refreshed.first(where: {
+                                $0.kind == resource.kind && $0.fileName == resource.fileName
+                            }) else { throw error }
+                            data = try await download(replacement)
+                        }
+                        try FileManager.default.createDirectory(at: attachmentsDirectory, withIntermediateDirectories: true)
+                        let target = fileNamer.next(in: attachmentsDirectory, name: resource.fileName)
+                        try data.write(to: target, options: .atomic)
+                        results.append(.init(
+                            name: resource.fileName,
+                            path: target.path,
+                            status: .success,
+                            message: "Saved from \(page.title)."
+                        ))
+                        completed += 1
+                        await progress?(completed, total, "Downloaded \(resource.fileName).")
+                    } catch {
+                        results.append(.init(
+                            name: resource.fileName,
+                            path: page.title,
+                            status: .failed,
+                            message: "Resource could not be refreshed: \(error.localizedDescription)"
+                        ))
+                        completed += 1
+                        await progress?(completed, total, "Skipped unavailable \(resource.fileName).")
+                    }
+                }
+            }
+
+            if includeImages {
+                if images.isEmpty {
+                    results.append(.init(
+                        name: page.title,
+                        path: "",
+                        status: .warning,
+                        message: "No embedded images found."
+                    ))
+                } else {
+                    try FileManager.default.createDirectory(at: pageDirectory, withIntermediateDirectories: true)
+                    var renderedImages: [Data] = []
+
+                    for (imageIndex, resource) in images.enumerated() {
+                        let downloaded: Data
+                        let currentResource: AttachmentResource
+                        do {
+                            do {
+                                downloaded = try await downloadRenderableImage(resource)
+                                currentResource = resource
+                            } catch {
+                                let refreshedContent = try await repository.pageContent(pageID: page.id, includeInkML: false)
+                                let refreshedImages = OneNoteHTML.images(from: refreshedContent.html, page: page)
+                                guard refreshedImages.indices.contains(imageIndex) else { throw error }
+                                currentResource = refreshedImages[imageIndex]
+                                downloaded = try await downloadRenderableImage(currentResource)
+                            }
+                        } catch {
+                            completed += 1
+                            results.append(.init(
+                                name: resource.fileName,
+                                path: page.title,
+                                status: .failed,
+                                message: "Image resource no longer exists and could not be refreshed: \(error.localizedDescription)"
+                            ))
+                            await progress?(completed, total, "Skipped unavailable \(resource.fileName).")
+                            continue
+                        }
+
+                        let rendered = try ImageExportRenderer.render(
+                            imageData: downloaded,
+                            resource: currentResource,
+                            strokes: strokes
+                        )
+                        renderedImages.append(rendered.data)
+                        let stem = URL(fileURLWithPath: resource.fileName).deletingPathExtension().lastPathComponent
+                        let target = fileNamer.next(
+                            in: pageDirectory,
+                            name: "\(stem).\(rendered.fileExtension)"
+                        )
+                        try rendered.data.write(to: target, options: .atomic)
+                        let drawingMessage = rendered.includedDrawings
+                            ? "Saved in page order with overlapping drawings."
+                            : includeDrawings
+                                ? (strokes.isEmpty
+                                    ? "Saved in visual page order; no drawing data was returned."
+                                    : "Saved in visual page order; no drawings overlapped this image.")
+                                : "Saved in visual page order."
+                        results.append(.init(
+                            name: target.lastPathComponent,
+                            path: target.path,
+                            status: .success,
+                            message: drawingMessage
+                        ))
+                        completed += 1
+                        await progress?(completed, total, "Exported \(target.lastPathComponent).")
+                    }
+
+                    if createPDF, !renderedImages.isEmpty {
+                        let pdfTarget = fileNamer.next(
+                            in: pageDirectory,
+                            name: "\(Filename.safe(page.title)).pdf"
+                        )
+                        try ImageExportRenderer.writePDF(images: renderedImages, to: pdfTarget)
+                        results.append(.init(
+                            name: pdfTarget.lastPathComponent,
+                            path: pdfTarget.path,
+                            status: .success,
+                            message: "Created PDF with \(renderedImages.count) image page(s) in visual order."
+                        ))
+                        completed += 1
+                        await progress?(completed, total, "Created \(pdfTarget.lastPathComponent).")
+                    } else if createPDF {
+                        completed += 1
+                        results.append(.init(
+                            name: page.title,
+                            path: pageDirectory.path,
+                            status: .warning,
+                            message: "PDF was not created because no image resources were available."
+                        ))
+                        await progress?(completed, total, "Skipped PDF for \(page.title).")
+                    }
+                }
+            }
+
+            if includeImages, !images.isEmpty, let drawingFetchWarning = fetchedContent.drawingFetchWarning {
+                results.append(.init(
+                    name: page.title,
+                    path: pageDirectory.path,
+                    status: .warning,
+                    message: drawingFetchWarning
+                ))
+            }
         }
 
         return results
+    }
+
+    @MainActor
+    private func fetchPageContent(
+        for page: PageNode,
+        includeDrawings: Bool
+    ) async throws -> (content: OneNotePageContent, drawingFetchWarning: String?) {
+        guard includeDrawings else {
+            return (try await repository.pageContent(pageID: page.id, includeInkML: false), nil)
+        }
+
+        do {
+            return (try await repository.pageContent(pageID: page.id, includeInkML: true), nil)
+        } catch {
+            let content = try await repository.pageContent(pageID: page.id, includeInkML: false)
+            return (
+                content,
+                "Images were exported, but Microsoft Graph did not return drawing data: \(error.localizedDescription)"
+            )
+        }
     }
 
     @MainActor
@@ -158,145 +298,6 @@ struct ExportService {
         return results
     }
 
-    @MainActor
-    private func exportImages(
-        pages: [PageNode],
-        outputDirectory: URL,
-        includeDrawings: Bool,
-        createPDF: Bool,
-        progress: BatchProgressUpdate? = nil
-    ) async throws -> [BatchResult] {
-        try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
-        var results: [BatchResult] = []
-        var completed = 0
-        var total = pages.count
-        var fileNamer = ExportFileNamer()
-
-        for page in pages {
-            let content: OneNotePageContent
-            var drawingFetchWarning: String?
-            if includeDrawings {
-                do {
-                    content = try await repository.pageContent(pageID: page.id, includeInkML: true)
-                } catch {
-                    content = try await repository.pageContent(pageID: page.id, includeInkML: false)
-                    drawingFetchWarning = "Images were exported, but Microsoft Graph did not return drawing data: \(error.localizedDescription)"
-                }
-            } else {
-                content = try await repository.pageContent(pageID: page.id, includeInkML: false)
-            }
-            let images = OneNoteHTML.images(from: content.html, page: page)
-            let strokes = includeDrawings ? InkMLParser.strokes(from: content.inkML) : []
-            total += images.count + (createPDF && !images.isEmpty ? 1 : 0)
-            completed += 1
-            await progress?(completed, total, "Found \(images.count) image(s) on \(page.title).")
-
-            guard !images.isEmpty else {
-                results.append(.init(
-                    name: page.title,
-                    path: "",
-                    status: .warning,
-                    message: "No embedded images found."
-                ))
-                continue
-            }
-
-            let pageDirectory = ExportPath.pageDirectory(for: page, outputDirectory: outputDirectory)
-            try FileManager.default.createDirectory(at: pageDirectory, withIntermediateDirectories: true)
-            var renderedImages: [Data] = []
-
-            for (imageIndex, resource) in images.enumerated() {
-                let downloaded: Data
-                let currentResource: AttachmentResource
-                do {
-                    do {
-                        downloaded = try await downloadRenderableImage(resource)
-                        currentResource = resource
-                    } catch {
-                        let refreshedContent = try await repository.pageContent(pageID: page.id, includeInkML: false)
-                        let refreshedImages = OneNoteHTML.images(from: refreshedContent.html, page: page)
-                        guard refreshedImages.indices.contains(imageIndex) else { throw error }
-                        currentResource = refreshedImages[imageIndex]
-                        downloaded = try await downloadRenderableImage(currentResource)
-                    }
-                } catch {
-                    completed += 1
-                    results.append(.init(
-                        name: resource.fileName,
-                        path: page.title,
-                        status: .failed,
-                        message: "Image resource no longer exists and could not be refreshed: \(error.localizedDescription)"
-                    ))
-                    await progress?(completed, total, "Skipped unavailable \(resource.fileName).")
-                    continue
-                }
-
-                let rendered = try ImageExportRenderer.render(
-                    imageData: downloaded,
-                    resource: currentResource,
-                    strokes: strokes
-                )
-                renderedImages.append(rendered.data)
-                let stem = URL(fileURLWithPath: resource.fileName).deletingPathExtension().lastPathComponent
-                let target = fileNamer.next(
-                    in: pageDirectory,
-                    name: "\(stem).\(rendered.fileExtension)"
-                )
-                try rendered.data.write(to: target, options: .atomic)
-                let drawingMessage = rendered.includedDrawings
-                    ? "Saved in page order with overlapping drawings."
-                    : includeDrawings
-                        ? (strokes.isEmpty
-                            ? "Saved in visual page order; no drawing data was returned."
-                            : "Saved in visual page order; no drawings overlapped this image.")
-                        : "Saved in visual page order."
-                results.append(.init(
-                    name: target.lastPathComponent,
-                    path: target.path,
-                    status: .success,
-                    message: drawingMessage
-                ))
-                completed += 1
-                await progress?(completed, total, "Exported \(target.lastPathComponent).")
-            }
-
-            if createPDF, !renderedImages.isEmpty {
-                let pdfTarget = fileNamer.next(
-                    in: pageDirectory,
-                    name: "\(Filename.safe(page.title)).pdf"
-                )
-                try ImageExportRenderer.writePDF(images: renderedImages, to: pdfTarget)
-                results.append(.init(
-                    name: pdfTarget.lastPathComponent,
-                    path: pdfTarget.path,
-                    status: .success,
-                    message: "Created PDF with \(renderedImages.count) image page(s) in visual order."
-                ))
-                completed += 1
-                await progress?(completed, total, "Created \(pdfTarget.lastPathComponent).")
-            } else if createPDF {
-                completed += 1
-                results.append(.init(
-                    name: page.title,
-                    path: pageDirectory.path,
-                    status: .warning,
-                    message: "PDF was not created because no image resources were available."
-                ))
-                await progress?(completed, total, "Skipped PDF for \(page.title).")
-            }
-
-            if let drawingFetchWarning {
-                results.append(.init(
-                    name: page.title,
-                    path: pageDirectory.path,
-                    status: .warning,
-                    message: drawingFetchWarning
-                ))
-            }
-        }
-        return results
-    }
-
     private func download(_ resource: AttachmentResource) async throws -> Data {
         do {
             return try await client.download(resource.resourceURL)
@@ -325,25 +326,6 @@ struct ExportService {
         return alternateData
     }
 
-    private func phaseProgress(
-        phase: Int,
-        phaseCount: Int,
-        progress: BatchProgressUpdate?
-    ) -> BatchProgressUpdate? {
-        guard let progress else { return nil }
-        return { completed, total, message in
-            let phaseFraction = total > 0
-                ? min(max(Double(completed) / Double(total), 0), 1)
-                : 0
-            let scaledCompleted = Double(phase) + phaseFraction
-            await progress(
-                Int((scaledCompleted * 100).rounded(.down)),
-                phaseCount * 100,
-                message
-            )
-        }
-    }
-
     @MainActor
     func backup(pages: [PageNode], outputDirectory: URL, progress: BatchProgressUpdate? = nil) async throws -> [BatchResult] {
         try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
@@ -357,7 +339,7 @@ struct ExportService {
         for page in pages {
             let pageDirectory = ExportPath.pageDirectory(for: page, outputDirectory: outputDirectory)
             let attachmentDirectory = pageDirectory.appendingPathComponent("attachments")
-            try FileManager.default.createDirectory(at: attachmentDirectory, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: pageDirectory, withIntermediateDirectories: true)
 
             let html = try await repository.pageContent(pageID: page.id)
             let text = OneNoteHTML.plainText(from: html)
@@ -374,6 +356,7 @@ struct ExportService {
                 downloadedAttachments += 1
                 do {
                     let data = try await download(resource)
+                    try FileManager.default.createDirectory(at: attachmentDirectory, withIntermediateDirectories: true)
                     let target = fileNamer.next(in: attachmentDirectory, name: resource.fileName)
                     try data.write(to: target, options: .atomic)
                     attachmentNames.append(target.lastPathComponent)
