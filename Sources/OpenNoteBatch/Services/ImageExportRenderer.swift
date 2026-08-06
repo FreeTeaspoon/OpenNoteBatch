@@ -131,7 +131,12 @@ enum ImageExportRenderer {
             return image
         }
 
-        guard let context = CGContext(url as CFURL, mediaBox: nil, nil) else {
+        let temporaryURL = url
+            .deletingLastPathComponent()
+            .appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
+        defer { try? FileManager.default.removeItem(at: temporaryURL) }
+
+        guard let context = CGContext(temporaryURL as CFURL, mediaBox: nil, nil) else {
             throw OpenNoteError.fileSystem("Could not write \(url.lastPathComponent).")
         }
         for image in sourceImages {
@@ -147,6 +152,13 @@ enum ImageExportRenderer {
             context.endPage()
         }
         context.closePDF()
+
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: url.path) {
+            _ = try fileManager.replaceItemAt(url, withItemAt: temporaryURL)
+        } else {
+            try fileManager.moveItem(at: temporaryURL, to: url)
+        }
     }
 
     private static func cgImage(from data: Data) -> CGImage? {

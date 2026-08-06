@@ -181,6 +181,7 @@ struct OneNoteContentParserTests {
             .appendingPathComponent("OpenNoteBatch-\(UUID().uuidString).pdf")
         defer { try? FileManager.default.removeItem(at: pdfURL) }
         try ImageExportRenderer.writePDF(images: [rendered.data], to: pdfURL)
+        try ImageExportRenderer.writePDF(images: [rendered.data], to: pdfURL)
         #expect((try Data(contentsOf: pdfURL)).starts(with: Data("%PDF".utf8)))
     }
 

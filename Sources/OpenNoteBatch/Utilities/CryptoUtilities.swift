@@ -70,15 +70,39 @@ enum Filename {
         var candidate = directory.appendingPathComponent(safeName)
         guard FileManager.default.fileExists(atPath: candidate.path) else { return candidate }
 
-        let ext = candidate.pathExtension
-        let stem = candidate.deletingPathExtension().lastPathComponent
         var index = 2
         repeat {
-            let nextName = ext.isEmpty ? "\(stem) (\(index))" : "\(stem) (\(index)).\(ext)"
-            candidate = directory.appendingPathComponent(nextName)
+            candidate = numbered(in: directory, name: safeName, occurrence: index)
             index += 1
         } while FileManager.default.fileExists(atPath: candidate.path)
         return candidate
+    }
+
+    static func numbered(in directory: URL, name: String, occurrence: Int) -> URL {
+        let safeName = safe(name, fallback: "Attachment")
+        guard occurrence > 1 else {
+            return directory.appendingPathComponent(safeName)
+        }
+
+        let base = directory.appendingPathComponent(safeName)
+        let ext = base.pathExtension
+        let stem = base.deletingPathExtension().lastPathComponent
+        let numberedName = ext.isEmpty
+            ? "\(stem) (\(occurrence))"
+            : "\(stem) (\(occurrence)).\(ext)"
+        return directory.appendingPathComponent(numberedName)
+    }
+}
+
+struct ExportFileNamer {
+    private var occurrences: [String: Int] = [:]
+
+    mutating func next(in directory: URL, name: String) -> URL {
+        let safeName = Filename.safe(name, fallback: "Attachment")
+        let key = "\(directory.standardizedFileURL.path)\u{0}\(safeName)"
+        let occurrence = occurrences[key, default: 0] + 1
+        occurrences[key] = occurrence
+        return Filename.numbered(in: directory, name: safeName, occurrence: occurrence)
     }
 }
 
@@ -128,4 +152,3 @@ final class KeychainStore {
         SecItemDelete(query as CFDictionary)
     }
 }
-

@@ -17,6 +17,7 @@ struct ExportService {
         var scannedPages = 0
         var discoveredResources = 0
         var downloadedResources = 0
+        var fileNamer = ExportFileNamer()
         for page in pages {
             let pageFolder = ExportPath.pageDirectory(for: page, outputDirectory: outputDirectory)
             let attachmentsFolder = pageFolder.appendingPathComponent("attachments")
@@ -53,8 +54,8 @@ struct ExportService {
                         }) else { throw error }
                         data = try await download(replacement)
                     }
-                    let target = Filename.unique(in: attachmentsFolder, name: resource.fileName)
-                    try data.write(to: target)
+                    let target = fileNamer.next(in: attachmentsFolder, name: resource.fileName)
+                    try data.write(to: target, options: .atomic)
                     results.append(.init(name: resource.fileName, path: target.path, status: .success, message: "Saved from \(page.title)."))
                     await progress?(scannedPages + downloadedResources, pages.count + discoveredResources, "Downloaded \(resource.fileName).")
                 } catch {
@@ -116,13 +117,14 @@ struct ExportService {
     func exportText(pages: [PageNode], outputDirectory: URL, progress: BatchProgressUpdate? = nil) async throws -> [BatchResult] {
         try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
         var results: [BatchResult] = []
+        var fileNamer = ExportFileNamer()
         for (index, page) in pages.enumerated() {
             do {
                 let html = try await repository.pageContent(pageID: page.id)
                 let text = OneNoteHTML.plainText(from: html)
                 let pageDirectory = ExportPath.pageDirectory(for: page, outputDirectory: outputDirectory)
                 try FileManager.default.createDirectory(at: pageDirectory, withIntermediateDirectories: true)
-                let target = Filename.unique(in: pageDirectory, name: "\(page.title).txt")
+                let target = fileNamer.next(in: pageDirectory, name: "\(page.title).txt")
                 try text.write(to: target, atomically: true, encoding: .utf8)
                 results.append(.init(name: page.title, path: target.path, status: .success, message: "Exported plain text."))
                 await progress?(index + 1, pages.count, "Exported \(page.title).")
@@ -138,12 +140,13 @@ struct ExportService {
     func exportHTML(pages: [PageNode], outputDirectory: URL, progress: BatchProgressUpdate? = nil) async throws -> [BatchResult] {
         try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
         var results: [BatchResult] = []
+        var fileNamer = ExportFileNamer()
         for (index, page) in pages.enumerated() {
             do {
                 let html = try await repository.pageContent(pageID: page.id)
                 let pageDirectory = ExportPath.pageDirectory(for: page, outputDirectory: outputDirectory)
                 try FileManager.default.createDirectory(at: pageDirectory, withIntermediateDirectories: true)
-                let target = Filename.unique(in: pageDirectory, name: "\(page.title).html")
+                let target = fileNamer.next(in: pageDirectory, name: "\(page.title).html")
                 try html.write(to: target, atomically: true, encoding: .utf8)
                 results.append(.init(name: page.title, path: target.path, status: .success, message: "Exported HTML."))
                 await progress?(index + 1, pages.count, "Exported \(page.title).")
@@ -167,6 +170,7 @@ struct ExportService {
         var results: [BatchResult] = []
         var completed = 0
         var total = pages.count
+        var fileNamer = ExportFileNamer()
 
         for page in pages {
             let content: OneNotePageContent
@@ -234,11 +238,11 @@ struct ExportService {
                 )
                 renderedImages.append(rendered.data)
                 let stem = URL(fileURLWithPath: resource.fileName).deletingPathExtension().lastPathComponent
-                let target = Filename.unique(
+                let target = fileNamer.next(
                     in: pageDirectory,
                     name: "\(stem).\(rendered.fileExtension)"
                 )
-                try rendered.data.write(to: target)
+                try rendered.data.write(to: target, options: .atomic)
                 let drawingMessage = rendered.includedDrawings
                     ? "Saved in page order with overlapping drawings."
                     : includeDrawings
@@ -257,7 +261,7 @@ struct ExportService {
             }
 
             if createPDF, !renderedImages.isEmpty {
-                let pdfTarget = Filename.unique(
+                let pdfTarget = fileNamer.next(
                     in: pageDirectory,
                     name: "\(Filename.safe(page.title)).pdf"
                 )
@@ -348,6 +352,7 @@ struct ExportService {
         var completedPages = 0
         var discoveredAttachments = 0
         var downloadedAttachments = 0
+        var fileNamer = ExportFileNamer()
 
         for page in pages {
             let pageDirectory = ExportPath.pageDirectory(for: page, outputDirectory: outputDirectory)
@@ -369,8 +374,8 @@ struct ExportService {
                 downloadedAttachments += 1
                 do {
                     let data = try await download(resource)
-                    let target = Filename.unique(in: attachmentDirectory, name: resource.fileName)
-                    try data.write(to: target)
+                    let target = fileNamer.next(in: attachmentDirectory, name: resource.fileName)
+                    try data.write(to: target, options: .atomic)
                     attachmentNames.append(target.lastPathComponent)
                     await progress?(
                         completedPages + downloadedAttachments,
