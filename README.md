@@ -15,6 +15,7 @@ project does not reuse any vendor client ID, private assets, or app code.
   work/school, and OneNote personal account modes.
 - Notebook and section browser.
 - Combined attachment and embedded-image export, with optional annotations and a PDF for each page.
+- Combined annotated PDF export with a clickable contents page and PDF outline bookmarks.
 - Page search across title or content.
 - Tag list scan from OneNote page HTML.
 - Export selected pages to text, HTML, or backup folders.
@@ -80,6 +81,13 @@ page annotations, and a PDF for each page. Individual embedded images are kept,
 and enabling page annotations also writes a page-level `*-annotated.png` file;
 the page PDF uses that full-page composite when it can preserve the OneNote
 coordinates.
+
+To make one study PDF, load the notebook, expand the relevant section, select
+the pages you want, then choose **Create Combined Annotated PDF**. The exporter
+uses the rendered OneNote image and InkML drawing data, so handwriting and
+highlights stay on the page. Pages that contain no embedded image, such as an
+empty file attachment page, are skipped. The PDF starts with a clickable
+contents page and also includes outline bookmarks for every included page.
 
 Features that Microsoft Graph does not expose safely, such as exact native
 section-size reporting or lost-section recovery, remain visible but return

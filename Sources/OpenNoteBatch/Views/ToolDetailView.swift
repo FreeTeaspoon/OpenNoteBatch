@@ -86,6 +86,12 @@ struct ToolDetailView: View {
                 .foregroundStyle(.secondary)
 
             outputChooser(label: "Destination")
+        case .exportCombinedPDF:
+            TextField("PDF filename", text: $model.combinedPDFFilename)
+            Text("Only pages containing rendered OneNote images are included. Page annotations and handwriting are composited into each page, and the first page is a clickable contents list.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            outputChooser(label: "Destination")
         case .exportText, .exportHTML, .backup:
             outputChooser(label: "Store folder")
         case .importText:

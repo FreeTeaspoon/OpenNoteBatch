@@ -29,6 +29,7 @@ final class AppViewModel: ObservableObject {
     @Published var includeImages = true
     @Published var includeDrawings = true
     @Published var createImagePDF = true
+    @Published var combinedPDFFilename = "GM-selected-pages.pdf"
     @Published var matchCase = false
     @Published var titleOnlySearch = true
     @Published var searchText = ""
@@ -485,6 +486,13 @@ final class AppViewModel: ObservableObject {
                         includeImages: self.includeImages,
                         includeDrawings: self.includeDrawings,
                         createPDF: self.createImagePDF,
+                        progress: progress
+                    )
+                case .exportCombinedPDF:
+                    return try await exportService.exportCombinedAnnotatedPDF(
+                        pages: self.requiredPages(),
+                        outputDirectory: self.resolvedOutputDirectory(),
+                        filename: self.combinedPDFFilename,
                         progress: progress
                     )
                 case .backup:

@@ -252,6 +252,7 @@ enum ToolID: String, CaseIterable, Identifiable {
     case exportText
     case exportHTML
     case exportAttachmentsAndImages
+    case exportCombinedPDF
     case backup
     case importText
     case importHTML
@@ -283,6 +284,7 @@ struct ToolDefinition: Identifiable, Equatable {
         .init(id: .findLost, tab: .home, group: "Limited support", title: "Find Inaccessible Sections", subtitle: "Inspect Graph metadata for sections that may have moved or become unavailable.", symbol: "folder.badge.questionmark", isGraphSupported: false),
         .init(id: .sectionSize, tab: .home, group: "Limited support", title: "Estimate Section Size", subtitle: "Estimate size from page resources that Microsoft Graph exposes.", symbol: "ruler", isGraphSupported: false),
         .init(id: .exportAttachmentsAndImages, tab: .export, group: "Recommended exports", title: "Export Attachments & Images", subtitle: "Save file attachments, embedded images, annotations, and page PDFs together.", symbol: "square.and.arrow.down", isGraphSupported: true),
+        .init(id: .exportCombinedPDF, tab: .export, group: "Recommended exports", title: "Create Combined Annotated PDF", subtitle: "Merge selected rendered OneNote pages into one PDF with clickable contents.", symbol: "doc.richtext", isGraphSupported: true),
         .init(id: .exportText, tab: .export, group: "Recommended exports", title: "Export Pages to TXT", subtitle: "Write selected pages as plain text.", symbol: "doc.plaintext", isGraphSupported: true),
         .init(id: .exportHTML, tab: .export, group: "Recommended exports", title: "Export Pages to HTML", subtitle: "Write selected pages as raw OneNote HTML.", symbol: "doc.richtext", isGraphSupported: true),
         .init(id: .backup, tab: .export, group: "Other exports", title: "Backup", subtitle: "Export HTML, text, attachments, and a manifest.", symbol: "externaldrive.badge.timemachine", isGraphSupported: true),

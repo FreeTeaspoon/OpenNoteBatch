@@ -360,11 +360,23 @@ enum ImageExportRenderer {
         }
 
         let document = PDFDocument()
-        let contents = makeContentsPage(titles: pages.map(\.title), pageSize: CGSize(width: 612, height: 792))
-        guard let contentsPage = PDFPage(image: contents) else {
-            throw OpenNoteError.fileSystem("Could not create the PDF contents page.")
+        let pageSize = CGSize(width: 612, height: 792)
+        let rowsPerContentsPage = 26
+        var contentsPages: [PDFPage] = []
+        for start in stride(from: 0, to: pages.count, by: rowsPerContentsPage) {
+            let end = min(start + rowsPerContentsPage, pages.count)
+            let contentsImage = makeContentsPage(
+                titles: pages[start..<end].map { $0.title },
+                pageNumber: contentsPages.count + 1,
+                pageCount: Int(ceil(Double(pages.count) / Double(rowsPerContentsPage))),
+                pageSize: pageSize
+            )
+            guard let contentsPage = PDFPage(image: contentsImage) else {
+                throw OpenNoteError.fileSystem("Could not create the PDF contents page.")
+            }
+            document.insert(contentsPage, at: document.pageCount)
+            contentsPages.append(contentsPage)
         }
-        document.insert(contentsPage, at: 0)
 
         var targetPages: [PDFPage] = []
         for page in pages {
@@ -375,16 +387,23 @@ enum ImageExportRenderer {
             targetPages.append(pdfPage)
         }
 
-        for (index, targetPage) in targetPages.enumerated() {
-            let rect = contentsLinkRect(index: index, pageSize: CGSize(width: 612, height: 792))
-            let annotation = PDFAnnotation(bounds: rect, forType: .link, withProperties: nil)
-            annotation.destination = PDFDestination(page: targetPage, at: CGPoint(x: 0, y: targetPage.bounds(for: .mediaBox).height))
-            contentsPage.addAnnotation(annotation)
+        for (contentsIndex, contentsPage) in contentsPages.enumerated() {
+            let start = contentsIndex * rowsPerContentsPage
+            let end = min(start + rowsPerContentsPage, targetPages.count)
+            for (localIndex, targetPage) in targetPages[start..<end].enumerated() {
+                let annotation = PDFAnnotation(
+                    bounds: contentsLinkRect(index: localIndex, pageSize: pageSize),
+                    forType: .link,
+                    withProperties: nil
+                )
+                annotation.destination = PDFDestination(page: targetPage, at: CGPoint(x: 0, y: targetPage.bounds(for: .mediaBox).height))
+                contentsPage.addAnnotation(annotation)
+            }
         }
 
         let outline = PDFOutline()
         outline.label = "Contents"
-        outline.destination = PDFDestination(page: contentsPage, at: CGPoint(x: 0, y: contentsPage.bounds(for: .mediaBox).height))
+        outline.destination = PDFDestination(page: contentsPages[0], at: CGPoint(x: 0, y: contentsPages[0].bounds(for: .mediaBox).height))
         for (index, page) in targetPages.enumerated() {
             let item = PDFOutline()
             item.label = pages[index].title
@@ -398,7 +417,7 @@ enum ImageExportRenderer {
         }
     }
 
-    private static func makeContentsPage(titles: [String], pageSize: CGSize) -> NSImage {
+    private static func makeContentsPage(titles: [String], pageNumber: Int, pageCount: Int, pageSize: CGSize) -> NSImage {
         let image = NSImage(size: pageSize)
         image.lockFocus()
         NSColor.white.setFill()
@@ -408,7 +427,8 @@ enum ImageExportRenderer {
             .font: NSFont.systemFont(ofSize: 24, weight: .bold),
             .foregroundColor: NSColor.black
         ]
-        NSString(string: "Contents").draw(at: CGPoint(x: 48, y: pageSize.height - 72), withAttributes: titleAttributes)
+        let heading = pageCount > 1 ? "Contents (\(pageNumber)/\(pageCount))" : "Contents"
+        NSString(string: heading).draw(at: CGPoint(x: 48, y: pageSize.height - 72), withAttributes: titleAttributes)
 
         let bodyAttributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 12),
