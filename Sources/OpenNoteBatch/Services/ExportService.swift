@@ -7,6 +7,93 @@ struct ExportService {
     let client: GraphClient
 
     @MainActor
+    func exportCombinedAnnotatedPDF(
+        pages: [PageNode],
+        outputDirectory: URL,
+        filename: String = "OneNote-selected-pages.pdf",
+        progress: BatchProgressUpdate? = nil
+    ) async throws -> [BatchResult] {
+        guard !pages.isEmpty else {
+            throw OpenNoteError.selectionRequired("Select one or more OneNote pages first.")
+        }
+
+        try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+        var renderedPages: [(title: String, data: Data)] = []
+        var results: [BatchResult] = []
+
+        for (index, page) in pages.enumerated() {
+            do {
+                let fetched = try await fetchPageContent(for: page, includeDrawings: true)
+                let resources = OneNoteHTML.images(from: fetched.content.html, page: page)
+                guard !resources.isEmpty else {
+                    results.append(.init(
+                        name: page.title,
+                        path: "",
+                        status: .warning,
+                        message: "Skipped because the page has no embedded image content."
+                    ))
+                    await progress?(index + 1, pages.count, "Skipped empty \(page.title).")
+                    continue
+                }
+
+                var downloaded: [(resource: AttachmentResource, data: Data)] = []
+                for resource in resources {
+                    do {
+                        downloaded.append((resource, try await downloadRenderableImage(resource)))
+                    } catch {
+                        // A page with a missing image cannot be composited safely.
+                        throw OpenNoteError.fileSystem("Could not download an image from \(page.title): \(error.localizedDescription)")
+                    }
+                }
+
+                let strokes = InkMLParser.strokes(from: fetched.content.inkML)
+                guard let composite = try ImageExportRenderer.renderPage(images: downloaded, strokes: strokes) else {
+                    results.append(.init(
+                        name: page.title,
+                        path: "",
+                        status: .warning,
+                        message: "Skipped because OneNote did not provide usable image positions."
+                    ))
+                    await progress?(index + 1, pages.count, "Skipped unusable \(page.title).")
+                    continue
+                }
+                renderedPages.append((page.title, composite.data))
+                let annotationText = composite.includedDrawings ? " with annotations" : ""
+                results.append(.init(
+                    name: page.title,
+                    path: "",
+                    status: .success,
+                    message: "Included rendered page\(annotationText)."
+                ))
+                await progress?(index + 1, pages.count, "Rendered \(page.title).")
+            } catch {
+                results.append(.init(
+                    name: page.title,
+                    path: "",
+                    status: .failed,
+                    message: "Skipped: \(error.localizedDescription)"
+                ))
+                await progress?(index + 1, pages.count, "Skipped unavailable \(page.title).")
+            }
+        }
+
+        guard !renderedPages.isEmpty else {
+            throw OpenNoteError.selectionRequired("No selected pages contained a usable rendered image.")
+        }
+
+        let safeFilename = Filename.safe(filename).hasSuffix(".pdf") ? Filename.safe(filename) : "\(Filename.safe(filename)).pdf"
+        let target = outputDirectory.appendingPathComponent(safeFilename)
+        try ImageExportRenderer.writeCombinedPDF(pages: renderedPages, to: target)
+        results.append(.init(
+            name: target.lastPathComponent,
+            path: target.path,
+            status: .success,
+            message: "Created a combined PDF with clickable contents and \(renderedPages.count) rendered page(s)."
+        ))
+        return results
+    }
+
+    @MainActor
     func exportAttachmentsAndImages(
         pages: [PageNode],
         outputDirectory: URL,

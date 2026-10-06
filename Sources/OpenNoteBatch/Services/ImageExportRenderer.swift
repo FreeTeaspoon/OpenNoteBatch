@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import ImageIO
+import PDFKit
 
 enum InkMLParser {
     static func strokes(from documents: [String]) -> [InkStroke] {
@@ -31,7 +32,7 @@ enum ImageExportRenderer {
         images: [(resource: AttachmentResource, data: Data)],
         strokes: [InkStroke]
     ) throws -> RenderedImage? {
-        guard !images.isEmpty, !strokes.isEmpty else { return nil }
+        guard !images.isEmpty else { return nil }
 
         struct DecodedImage {
             var image: CGImage
@@ -84,8 +85,6 @@ enum ImageExportRenderer {
                 && bounds.maxY.isFinite
                 && !stroke.points.isEmpty
         }
-        guard !renderableStrokes.isEmpty else { return nil }
-
         var contentBounds = decodedImages.reduce(CGRect.null) { result, decoded in
             result.union(decoded.frame)
         }
@@ -166,7 +165,7 @@ enum ImageExportRenderer {
         else {
             throw OpenNoteError.fileSystem("Could not encode the full-page annotated image.")
         }
-        return RenderedImage(data: png, fileExtension: "png", includedDrawings: true)
+        return RenderedImage(data: png, fileExtension: "png", includedDrawings: !renderableStrokes.isEmpty)
     }
 
     static func render(
@@ -348,6 +347,83 @@ enum ImageExportRenderer {
         } else {
             try fileManager.moveItem(at: temporaryURL, to: url)
         }
+    }
+
+    /// Writes one PDF with a clickable contents page followed by the selected
+    /// OneNote page composites. Empty pages never reach this method.
+    static func writeCombinedPDF(
+        pages: [(title: String, data: Data)],
+        to url: URL
+    ) throws {
+        guard !pages.isEmpty else {
+            throw OpenNoteError.fileSystem("Could not create a combined PDF without any rendered pages.")
+        }
+
+        let document = PDFDocument()
+        let contents = makeContentsPage(titles: pages.map(\.title), pageSize: CGSize(width: 612, height: 792))
+        guard let contentsPage = PDFPage(image: contents) else {
+            throw OpenNoteError.fileSystem("Could not create the PDF contents page.")
+        }
+        document.insert(contentsPage, at: 0)
+
+        var targetPages: [PDFPage] = []
+        for page in pages {
+            guard let image = NSImage(data: page.data), let pdfPage = PDFPage(image: image) else {
+                throw OpenNoteError.fileSystem("Could not decode the rendered page \(page.title).")
+            }
+            document.insert(pdfPage, at: document.pageCount)
+            targetPages.append(pdfPage)
+        }
+
+        for (index, targetPage) in targetPages.enumerated() {
+            let rect = contentsLinkRect(index: index, pageSize: CGSize(width: 612, height: 792))
+            let annotation = PDFAnnotation(bounds: rect, forType: .link, withProperties: nil)
+            annotation.destination = PDFDestination(page: targetPage, at: CGPoint(x: 0, y: targetPage.bounds(for: .mediaBox).height))
+            contentsPage.addAnnotation(annotation)
+        }
+
+        let outline = PDFOutline()
+        outline.label = "Contents"
+        outline.destination = PDFDestination(page: contentsPage, at: CGPoint(x: 0, y: contentsPage.bounds(for: .mediaBox).height))
+        for (index, page) in targetPages.enumerated() {
+            let item = PDFOutline()
+            item.label = pages[index].title
+            item.destination = PDFDestination(page: page, at: CGPoint(x: 0, y: page.bounds(for: .mediaBox).height))
+            outline.insertChild(item, at: outline.numberOfChildren)
+        }
+        document.outlineRoot = outline
+
+        guard document.write(to: url) else {
+            throw OpenNoteError.fileSystem("Could not write \(url.lastPathComponent).")
+        }
+    }
+
+    private static func makeContentsPage(titles: [String], pageSize: CGSize) -> NSImage {
+        let image = NSImage(size: pageSize)
+        image.lockFocus()
+        NSColor.white.setFill()
+        NSBezierPath(rect: CGRect(origin: .zero, size: pageSize)).fill()
+
+        let titleAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 24, weight: .bold),
+            .foregroundColor: NSColor.black
+        ]
+        NSString(string: "Contents").draw(at: CGPoint(x: 48, y: pageSize.height - 72), withAttributes: titleAttributes)
+
+        let bodyAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12),
+            .foregroundColor: NSColor.black
+        ]
+        for (index, title) in titles.enumerated() {
+            let y = pageSize.height - 112 - CGFloat(index * 24)
+            NSString(string: "\(index + 1). \(title)").draw(at: CGPoint(x: 56, y: y), withAttributes: bodyAttributes)
+        }
+        image.unlockFocus()
+        return image
+    }
+
+    private static func contentsLinkRect(index: Int, pageSize: CGSize) -> CGRect {
+        CGRect(x: 44, y: pageSize.height - 118 - CGFloat(index * 24), width: pageSize.width - 88, height: 20)
     }
 
     private static func cgImage(from data: Data) -> CGImage? {
